@@ -33,6 +33,7 @@ The server converts that project state into an FFmpeg `filter_complex` graph and
 - Upload custom font files and use them for text rendering
 - Add static text overlays
 - Add remote text overlays that poll an HTTP endpoint and keep updating
+- Control text background opacity independently from text color
 - Move and resize sources visually from the canvas editor
 - Control source order with z-index
 - Configure source opacity and corner radius
@@ -59,6 +60,7 @@ At runtime, the system looks like this:
 3. When streaming is started, the backend builds the FFmpeg command line from the stored state.
 4. FFmpeg reads HLS inputs, images, and generated text files and produces either HLS output or an RTMP stream for YouTube.
 5. Remote text sources are refreshed by a background Go worker that rewrites text files under `/data/runtime/text`.
+6. If FFmpeg exits unexpectedly, the backend retries the stream automatically unless the stop was explicitly requested.
 
 ## Quick Start
 
@@ -230,6 +232,8 @@ Relevant fields:
 - `output.hls.path`
 - `output.hls.publicPath`
 
+`output.hls.path` must be a relative path inside the data directory. Absolute paths and parent-directory traversal such as `../...` are rejected.
+
 Default public path:
 
 ```text
@@ -271,6 +275,7 @@ The application exposes explicit start and stop operations.
 - Starting the stream launches FFmpeg from the saved project state.
 - Stopping the stream sends `SIGTERM` to the FFmpeg process.
 - Saving the full project or saving a source while a stream is already running causes the backend to restart FFmpeg so layout changes take effect immediately.
+- Source-level saves, deletions, uploads, and stop/start operations preserve unrelated unsaved edits in the browser instead of wiping the local draft state.
 - Remote text updates do not require FFmpeg restart because they update text files in place.
 
 ## REST API
@@ -295,6 +300,11 @@ The frontend uses the following API endpoints.
 
 - `DELETE /api/v1/sources/:id`
   Deletes one source.
+
+Notes:
+
+- `layout.opacity = 0` is valid and preserved when explicitly sent.
+- If `layout.opacity` is omitted on source creation, the backend defaults it to `1`.
 
 ### Runtime text
 
@@ -428,6 +438,7 @@ Operational caveats:
 - This project is designed for trusted local or internal network environments unless you add your own auth/reverse proxy layer.
 - The browser preview is an approximation of FFmpeg output, not a pixel-perfect renderer.
 - HLS preview is only available when output mode is `hls`.
+- Saving while streaming can restart FFmpeg when the change affects the composed output. Plan around that if you need a fully uninterrupted pipeline.
 
 ## Development
 
@@ -468,6 +479,7 @@ Check:
 - `/data/logs/server.log`
 - `/data/logs/ffmpeg.log`
 - the current project state from `GET /api/v1/state`
+- whether `output.hls.path` is a safe relative path inside `/data`
 
 ### Japanese text does not render
 
@@ -494,6 +506,14 @@ Check the current output mode first.
 - In `youtube` mode, the UI cannot preview the actual YouTube output directly and instead shows a placeholder.
 
 For text overlays, remember that the browser editor is only an approximation of FFmpeg rendering.
+
+### A source save reverted other unsaved changes
+
+Current behavior is that unrelated unsaved browser edits should be preserved across source saves, source deletes, uploads, and stop/start actions. If you still see state rollback, verify:
+
+- the browser has refreshed to the latest frontend build
+- the project was not reloaded from another client
+- the request completed successfully and did not return a validation error
 
 ## License
 

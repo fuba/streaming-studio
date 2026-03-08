@@ -18,17 +18,25 @@ type Engine struct {
 	dataDir string
 	logger  *log.Logger
 
-	mu        sync.RWMutex
-	cmd       *exec.Cmd
-	status    model.StreamStatus
-	ffmpegLog string
+	mu             sync.RWMutex
+	cmd            *exec.Cmd
+	status         model.StreamStatus
+	ffmpegLog      string
+	desiredProject model.ProjectState
+	stopRequested  bool
+	restartDelay   time.Duration
+	commandFactory func(args []string) *exec.Cmd
 }
 
 func NewEngine(dataDir, ffmpegLog string, logger *log.Logger) *Engine {
 	return &Engine{
-		dataDir:   dataDir,
-		ffmpegLog: ffmpegLog,
-		logger:    logger,
+		dataDir:      dataDir,
+		ffmpegLog:    ffmpegLog,
+		logger:       logger,
+		restartDelay: time.Second,
+		commandFactory: func(args []string) *exec.Cmd {
+			return exec.Command("ffmpeg", args...)
+		},
 		status: model.StreamStatus{
 			Command: []string{},
 		},
@@ -44,7 +52,11 @@ func (e *Engine) Start(project model.ProjectState) (model.StreamStatus, error) {
 	}
 
 	if project.Output.Mode == model.OutputModeHLS {
-		hlsDir := filepath.Join(e.dataDir, filepath.Dir(project.Output.HLS.Path))
+		targetPath, err := ResolveOutputPath(e.dataDir, project.Output.HLS.Path)
+		if err != nil {
+			return e.status, err
+		}
+		hlsDir := filepath.Dir(targetPath)
 		if err := os.RemoveAll(hlsDir); err != nil {
 			return e.status, err
 		}
@@ -67,7 +79,7 @@ func (e *Engine) Start(project model.ProjectState) (model.StreamStatus, error) {
 		return e.status, err
 	}
 
-	cmd := exec.Command("ffmpeg", result.Args...)
+	cmd := e.commandFactory(result.Args)
 	writer := io.MultiWriter(logFile, os.Stdout)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
@@ -80,6 +92,8 @@ func (e *Engine) Start(project model.ProjectState) (model.StreamStatus, error) {
 
 	startedAt := time.Now().UTC()
 	e.cmd = cmd
+	e.stopRequested = false
+	e.desiredProject = project
 	e.status = model.StreamStatus{
 		Running:   true,
 		Mode:      project.Output.Mode,
@@ -95,9 +109,17 @@ func (e *Engine) Start(project model.ProjectState) (model.StreamStatus, error) {
 	return e.status, nil
 }
 
+func (e *Engine) UpdateProject(project model.ProjectState) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.desiredProject = project
+}
+
 func (e *Engine) Stop() (model.StreamStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	e.stopRequested = true
 
 	if e.cmd == nil || e.cmd.Process == nil {
 		return e.status, nil
@@ -122,12 +144,11 @@ func (e *Engine) wait(cmd *exec.Cmd, logFile *os.File) {
 	_ = logFile.Close()
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	pid := 0
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
+	manualStop := e.stopRequested
 
 	e.logger.Printf("stream exited pid=%d err=%v", pid, err)
 
@@ -138,6 +159,47 @@ func (e *Engine) wait(cmd *exec.Cmd, logFile *os.File) {
 		e.status.LastError = err.Error()
 	} else {
 		e.status.LastError = ""
+	}
+	e.mu.Unlock()
+
+	if manualStop {
+		return
+	}
+
+	e.logger.Printf("stream restart scheduled after unexpected exit pid=%d delay=%s", pid, e.restartDelay)
+	go e.restartLoop()
+}
+
+func (e *Engine) restartLoop() {
+	for {
+		time.Sleep(e.restartDelay)
+
+		e.mu.RLock()
+		stopRequested := e.stopRequested
+		running := e.status.Running
+		project := e.desiredProject
+		e.mu.RUnlock()
+
+		if stopRequested || running {
+			return
+		}
+
+		if _, err := e.Start(project); err != nil {
+			e.logger.Printf("stream restart failed: %v", err)
+
+			e.mu.RLock()
+			running = e.status.Running
+			stopRequested = e.stopRequested
+			e.mu.RUnlock()
+
+			if running || stopRequested {
+				return
+			}
+			continue
+		}
+
+		e.logger.Printf("stream restart completed")
+		return
 	}
 }
 

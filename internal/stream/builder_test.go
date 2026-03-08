@@ -87,6 +87,7 @@ func TestBuildFFmpegArgsForHLSOutput(t *testing.T) {
 	assertContains(t, command, "https://example.com/live-a.m3u8")
 	assertContains(t, command, filepath.Join(dataDir, "assets/images/overlay.png"))
 	assertContains(t, command, "textfile='")
+	assertContains(t, command, "boxcolor=#000000@0.800")
 	assertContains(t, command, "-f hls")
 	assertContains(t, command, filepath.Join(dataDir, "output/hls/live.m3u8"))
 	assertContains(t, command, "colorchannelmixer=aa=0.750")
@@ -132,6 +133,31 @@ func TestBuildFFmpegArgsForYouTubePreset(t *testing.T) {
 	command := strings.Join(result.Args, " ")
 	assertContains(t, command, "-f flv rtmp://a.rtmp.youtube.com/live2/abcd-efgh-ijkl")
 	assertContains(t, command, "-maxrate 6000k -bufsize 12000k -tune zerolatency")
+}
+
+func TestBuildFFmpegArgsRejectsUnsafeHLSOutputPath(t *testing.T) {
+	t.Parallel()
+
+	project := model.DefaultProjectState()
+	project.Output.HLS.Path = "../../../tmp/live.m3u8"
+	project.Sources = []model.Source{
+		{
+			ID:      "cam-a",
+			Name:    "Camera A",
+			Kind:    model.SourceKindHLS,
+			Enabled: true,
+			Layout: model.Layout{
+				Width:   1280,
+				Height:  720,
+				Opacity: 1,
+			},
+			HLS: &model.HLSSource{URL: "https://example.com/live-a.m3u8"},
+		},
+	}
+
+	if _, err := BuildFFmpegArgs(project, BuildConfig{DataDir: "/data"}); err == nil {
+		t.Fatalf("BuildFFmpegArgs() error = nil, want invalid output path error")
+	}
 }
 
 func TestBuildFFmpegArgsKeepsOpacityZeroAndFallsBackAudio(t *testing.T) {
@@ -267,6 +293,89 @@ func TestBuildFFmpegArgsWritesMultilineTextFile(t *testing.T) {
 	}
 	if string(content) != "1行目\n2行目" {
 		t.Fatalf("text file content = %q, want %q", string(content), "1行目\n2行目")
+	}
+}
+
+func TestBuildFFmpegArgsOmitsTextBackgroundBoxWhenOpacityIsZero(t *testing.T) {
+	t.Parallel()
+
+	backgroundOpacity := 0.0
+	project := model.DefaultProjectState()
+	project.Sources = []model.Source{
+		{
+			ID:      "title-transparent-bg",
+			Name:    "Transparent Background",
+			Kind:    model.SourceKindText,
+			Enabled: true,
+			Layout: model.Layout{
+				X:       20,
+				Y:       30,
+				Width:   400,
+				Height:  100,
+				Opacity: 1,
+				ZIndex:  0,
+			},
+			Text: &model.TextSource{
+				Content:           "No box",
+				FontSize:          32,
+				Color:             "#ffffff",
+				BackgroundColor:   "#111827",
+				BackgroundOpacity: &backgroundOpacity,
+			},
+		},
+	}
+
+	result, err := BuildFFmpegArgs(project, BuildConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("BuildFFmpegArgs() returned error: %v", err)
+	}
+
+	command := strings.Join(result.Args, " ")
+	if strings.Contains(command, ":box=1:boxcolor=") {
+		t.Fatalf("command = %q, want no drawtext box when background opacity is zero", command)
+	}
+}
+
+func TestBuildFFmpegArgsUsesRoundedBackgroundOverlayForTextRadius(t *testing.T) {
+	t.Parallel()
+
+	backgroundOpacity := 0.8
+	project := model.DefaultProjectState()
+	project.Sources = []model.Source{
+		{
+			ID:      "title-radius",
+			Name:    "Rounded Text",
+			Kind:    model.SourceKindText,
+			Enabled: true,
+			Layout: model.Layout{
+				X:       20,
+				Y:       30,
+				Width:   400,
+				Height:  100,
+				Radius:  16,
+				Opacity: 1,
+				ZIndex:  0,
+			},
+			Text: &model.TextSource{
+				Content:           "Rounded",
+				FontSize:          32,
+				Color:             "#ffffff",
+				BackgroundColor:   "#111827",
+				BackgroundOpacity: &backgroundOpacity,
+			},
+		},
+	}
+
+	result, err := BuildFFmpegArgs(project, BuildConfig{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("BuildFFmpegArgs() returned error: %v", err)
+	}
+
+	command := strings.Join(result.Args, " ")
+	assertContains(t, command, "color=c=#111827@0.800:s=400x100")
+	assertContains(t, command, "overlay=20:30:format=auto")
+	if strings.Contains(command, ":box=1:boxcolor=") {
+		t.Fatalf("command = %q, want rounded text background to use overlay instead of drawtext box", command)
 	}
 }
 

@@ -336,22 +336,24 @@ a {
 
 .text-fill,
 .missing {
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
 }
 
 .text-fill {
   display: block;
+  box-sizing: border-box;
   padding: 0;
   text-align: left;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.2;
+  background: transparent;
 }
 
 .text-inline {
   display: inline-block;
-  padding: 0.1em 0.2em;
+  padding: 0;
 }
 
 .missing {

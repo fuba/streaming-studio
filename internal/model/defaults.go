@@ -3,9 +3,10 @@ package model
 func DefaultProjectState() ProjectState {
 	return ProjectState{
 		Canvas: Canvas{
-			Width:           1280,
-			Height:          720,
-			BackgroundColor: "#111827",
+			Width:                 1280,
+			Height:                720,
+			BackgroundColor:       "#111827",
+			EditorBackgroundColor: "#020202",
 		},
 		Sources: []Source{},
 		Assets:  []Asset{},

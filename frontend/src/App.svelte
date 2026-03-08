@@ -10,6 +10,7 @@
       width: 1280,
       height: 720,
       backgroundColor: '#111827',
+      editorBackgroundColor: '#020202',
       customCSS: ''
     },
     sources: [],
@@ -44,6 +45,7 @@
   };
 
   let project = structuredClone(defaultProject);
+  let savedProject = structuredClone(defaultProject);
   let stream = structuredClone(defaultStream);
   let selectedSourceId = '';
   let dirty = false;
@@ -85,8 +87,10 @@
     try {
       const response = await api.getState();
       project = normalizeProject(response.project);
+      savedProject = structuredClone(project);
       stream = normalizeStream(response.stream);
       persistedSourceIds = sourceIdSet(project);
+      dirty = false;
       if (!project.sources.some((source) => source.id === selectedSourceId)) {
         selectedSourceId = project.sources[0]?.id ?? '';
       }
@@ -105,6 +109,7 @@
       stream = normalizeStream(response.stream);
       if (!dirty) {
         project = normalizeProject(response.project);
+        savedProject = structuredClone(project);
         persistedSourceIds = sourceIdSet(project);
       }
       await refreshRuntimeTexts();
@@ -124,6 +129,7 @@
     try {
       const response = await api.saveState(project);
       project = normalizeProject(response.project);
+      savedProject = structuredClone(project);
       stream = normalizeStream(response.stream);
       persistedSourceIds = sourceIdSet(project);
       dirty = false;
@@ -150,7 +156,7 @@
       sources: [...project.sources, source]
     };
     selectedSourceId = source.id;
-    dirty = true;
+    updateDirtyState();
     statusMessage = `${kind.toUpperCase()} source added`;
     errorMessage = '';
   }
@@ -160,13 +166,17 @@
       return;
     }
     try {
+      const previousSavedProject = structuredClone(savedProject);
+      const localProject = structuredClone(project);
       const response = persistedSourceIds.has(source.id)
         ? await api.updateSource(source)
         : await api.createSource(source);
-      project = normalizeProject(response.project);
+      const persistedProject = normalizeProject(response.project);
+      savedProject = structuredClone(persistedProject);
+      project = mergeProjectState(localProject, previousSavedProject, persistedProject, { persistedSourceId: source.id });
       stream = normalizeStream(response.stream);
-      persistedSourceIds = sourceIdSet(project);
-      dirty = false;
+      persistedSourceIds = sourceIdSet(persistedProject);
+      updateDirtyState();
       await refreshRuntimeTexts();
       statusMessage = `Saved ${source.name}`;
       errorMessage = '';
@@ -186,18 +196,22 @@
         sources: remainingSources
       };
       selectedSourceId = remainingSources[0]?.id ?? '';
-      dirty = true;
+      updateDirtyState();
       statusMessage = 'Source removed locally';
       errorMessage = '';
       return;
     }
     try {
+      const previousSavedProject = structuredClone(savedProject);
+      const localProject = structuredClone(project);
       const response = await api.deleteSource(selectedSource.id);
-      project = normalizeProject(response.project);
+      const persistedProject = normalizeProject(response.project);
+      savedProject = structuredClone(persistedProject);
+      project = mergeProjectState(localProject, previousSavedProject, persistedProject, { deletedSourceId: selectedSource.id });
       stream = normalizeStream(response.stream);
-      persistedSourceIds = sourceIdSet(project);
+      persistedSourceIds = sourceIdSet(persistedProject);
       selectedSourceId = project.sources[0]?.id ?? '';
-      dirty = false;
+      updateDirtyState();
       await refreshRuntimeTexts();
       statusMessage = 'Source deleted';
       errorMessage = '';
@@ -216,7 +230,9 @@
     try {
       const response = await api.startStream();
       project = normalizeProject(response.project);
+      savedProject = structuredClone(project);
       stream = normalizeStream(response.stream);
+      dirty = false;
       await refreshRuntimeTexts();
       statusMessage = 'Stream started';
       errorMessage = '';
@@ -227,9 +243,14 @@
 
   async function stopStream() {
     try {
+      const previousSavedProject = structuredClone(savedProject);
+      const localProject = structuredClone(project);
       const response = await api.stopStream();
-      project = normalizeProject(response.project);
+      const persistedProject = normalizeProject(response.project);
+      savedProject = structuredClone(persistedProject);
+      project = mergeProjectState(localProject, previousSavedProject, persistedProject);
       stream = normalizeStream(response.stream);
+      updateDirtyState();
       await refreshRuntimeTexts();
       statusMessage = 'Stop requested';
       errorMessage = '';
@@ -241,10 +262,15 @@
   async function handleUpload(event) {
     uploadBusy = true;
     try {
+      const previousSavedProject = structuredClone(savedProject);
+      const localProject = structuredClone(project);
       const response = await api.uploadAsset(event.detail.kind, event.detail.file);
-      project = normalizeProject(response.project);
+      const persistedProject = normalizeProject(response.project);
+      savedProject = structuredClone(persistedProject);
+      project = mergeProjectState(localProject, previousSavedProject, persistedProject);
       stream = normalizeStream(response.stream);
-      dirty = false;
+      persistedSourceIds = sourceIdSet(persistedProject);
+      updateDirtyState();
       await refreshRuntimeTexts();
       statusMessage = `${event.detail.kind} uploaded`;
       errorMessage = '';
@@ -257,7 +283,6 @@
 
   function handleCanvasChange(event) {
     replaceSource(event.detail.source);
-    dirty = true;
     if (event.detail.persist) {
       saveSource(event.detail.source);
     }
@@ -268,13 +293,14 @@
       ...project,
       sources: project.sources.map((source) => (source.id === nextSource.id ? nextSource : source))
     };
+    updateDirtyState();
   }
 
   function updateProject(mutator) {
     const nextProject = structuredClone(project);
     mutator(nextProject);
     project = nextProject;
-    dirty = true;
+    updateDirtyState();
   }
 
   function updateSelectedSource(mutator) {
@@ -347,6 +373,7 @@
             fontSize: 42,
             color: '#ffffff',
             backgroundColor: '#111827',
+            backgroundOpacity: 0.8,
             borderColor: '#000000',
             borderWidth: 0,
             lineSpacing: 0,
@@ -416,6 +443,7 @@
         fontSize: 44,
         color: '#ffffff',
         backgroundColor: '#111827',
+        backgroundOpacity: 0.8,
         borderColor: '#000000',
         borderWidth: 0,
         lineSpacing: 0,
@@ -451,6 +479,62 @@
 
   function sourceIdSet(currentProject) {
     return new Set((currentProject.sources ?? []).map((source) => source.id));
+  }
+
+  function updateDirtyState() {
+    dirty = !sameJSON(project, savedProject);
+  }
+
+  function sameJSON(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  function mergeProjectState(localProject, previousSavedProject, persistedProject, options = {}) {
+    const merged = structuredClone(persistedProject);
+
+    if (!sameJSON(localProject.canvas, previousSavedProject.canvas)) {
+      merged.canvas = structuredClone(localProject.canvas);
+    }
+    if (!sameJSON(localProject.output, previousSavedProject.output)) {
+      merged.output = structuredClone(localProject.output);
+    }
+
+    const localSources = new Map((localProject.sources ?? []).map((source) => [source.id, source]));
+    const savedSources = new Map((previousSavedProject.sources ?? []).map((source) => [source.id, source]));
+    const mergedSources = new Map((persistedProject.sources ?? []).map((source) => [source.id, structuredClone(source)]));
+
+    for (const [sourceId, localSource] of localSources) {
+      if (sourceId === options.persistedSourceId || sourceId === options.deletedSourceId) {
+        continue;
+      }
+      const savedSource = savedSources.get(sourceId);
+      const hadUnsavedChanges = !savedSource || !sameJSON(localSource, savedSource);
+      if (!hadUnsavedChanges) {
+        continue;
+      }
+      mergedSources.set(sourceId, structuredClone(localSource));
+    }
+
+    const orderedSourceIDs = [
+      ...(localProject.sources ?? []).map((source) => source.id),
+      ...(persistedProject.sources ?? []).map((source) => source.id)
+    ];
+
+    merged.sources = [];
+    for (const sourceId of orderedSourceIDs) {
+      if (sourceId === options.deletedSourceId) {
+        continue;
+      }
+      if (!mergedSources.has(sourceId)) {
+        continue;
+      }
+      if (merged.sources.some((source) => source.id === sourceId)) {
+        continue;
+      }
+      merged.sources.push(mergedSources.get(sourceId));
+    }
+
+    return merged;
   }
 
   function streamCommand() {
@@ -625,6 +709,10 @@
             <span>Background</span>
             <input type="color" value={project.canvas.backgroundColor} on:input={(event) => updateProject((draft) => (draft.canvas.backgroundColor = event.currentTarget.value))} />
           </label>
+          <label>
+            <span>Editor Background</span>
+            <input type="color" value={project.canvas.editorBackgroundColor || '#020202'} on:input={(event) => updateProject((draft) => (draft.canvas.editorBackgroundColor = event.currentTarget.value))} />
+          </label>
         </div>
         <label>
           <span>Canvas CSS</span>
@@ -660,12 +748,10 @@
               <span>Opacity</span>
               <input type="number" min="0" max="1" step="0.05" value={selectedSource.layout.opacity} on:input={(event) => updateSelectedSource((source) => (source.layout.opacity = Number(event.currentTarget.value) || 0))} />
             </label>
-            {#if selectedSource.kind !== 'text'}
-              <label>
-                <span>Radius</span>
-                <input type="number" min="0" value={selectedSource.layout.radius || 0} on:input={(event) => updateSelectedSource((source) => (source.layout.radius = Math.max(0, Number(event.currentTarget.value) || 0)))} />
-              </label>
-            {/if}
+            <label>
+              <span>Radius</span>
+              <input type="number" min="0" value={selectedSource.layout.radius || 0} on:input={(event) => updateSelectedSource((source) => (source.layout.radius = Math.max(0, Number(event.currentTarget.value) || 0)))} />
+            </label>
             <label>
               <span>Z Index</span>
               <input type="number" value={selectedSource.layout.zIndex} on:input={(event) => updateSelectedSource((source) => (source.layout.zIndex = Number(event.currentTarget.value) || 0))} />
@@ -735,6 +821,10 @@
               <label>
                 <span>Background</span>
                 <input type="color" value={selectedSource.text?.backgroundColor || '#111827'} on:input={(event) => updateSelectedSource((source) => (source.text.backgroundColor = event.currentTarget.value))} />
+              </label>
+              <label>
+                <span>Background Opacity</span>
+                <input type="number" min="0" max="1" step="0.05" value={selectedSource.text?.backgroundOpacity ?? 0.8} on:input={(event) => updateSelectedSource((source) => (source.text.backgroundOpacity = Math.max(0, Math.min(1, Number(event.currentTarget.value) || 0))))} />
               </label>
               <label>
                 <span>Border Color</span>

@@ -25,10 +25,11 @@ const (
 )
 
 type Canvas struct {
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	BackgroundColor string `json:"backgroundColor"`
-	CustomCSS       string `json:"customCSS"`
+	Width                 int    `json:"width"`
+	Height                int    `json:"height"`
+	BackgroundColor       string `json:"backgroundColor"`
+	EditorBackgroundColor string `json:"editorBackgroundColor"`
+	CustomCSS             string `json:"customCSS"`
 }
 
 type Layout struct {
@@ -51,15 +52,16 @@ type ImageSource struct {
 }
 
 type TextSource struct {
-	Content         string            `json:"content"`
-	FontAssetID     string            `json:"fontAssetId"`
-	FontSize        int               `json:"fontSize"`
-	Color           string            `json:"color"`
-	BackgroundColor string            `json:"backgroundColor"`
-	BorderColor     string            `json:"borderColor"`
-	BorderWidth     int               `json:"borderWidth"`
-	LineSpacing     int               `json:"lineSpacing"`
-	Remote          *RemoteTextSource `json:"remote,omitempty"`
+	Content           string            `json:"content"`
+	FontAssetID       string            `json:"fontAssetId"`
+	FontSize          int               `json:"fontSize"`
+	Color             string            `json:"color"`
+	BackgroundColor   string            `json:"backgroundColor"`
+	BackgroundOpacity *float64          `json:"backgroundOpacity,omitempty"`
+	BorderColor       string            `json:"borderColor"`
+	BorderWidth       int               `json:"borderWidth"`
+	LineSpacing       int               `json:"lineSpacing"`
+	Remote            *RemoteTextSource `json:"remote,omitempty"`
 }
 
 type RemoteTextSource struct {

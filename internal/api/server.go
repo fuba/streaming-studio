@@ -18,6 +18,7 @@ import (
 
 	"streaming-studio/internal/model"
 	"streaming-studio/internal/store"
+	"streaming-studio/internal/stream"
 )
 
 type Server struct {
@@ -32,6 +33,7 @@ type StreamController interface {
 	Start(project model.ProjectState) (model.StreamStatus, error)
 	Stop() (model.StreamStatus, error)
 	Status() model.StreamStatus
+	UpdateProject(project model.ProjectState)
 }
 
 func NewServer(store *store.FileStore, engine StreamController, dataDir, uiDistDir string, logger *log.Logger) *Server {
@@ -102,7 +104,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := validateProjectState(payload); err != nil {
+		if err := validateProjectState(s.dataDir, payload); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -132,8 +134,8 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var source model.Source
-	if err := json.NewDecoder(r.Body).Decode(&source); err != nil {
+	source, opacityProvided, err := decodeSourceCreateRequest(r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -146,7 +148,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	if source.Layout.Height == 0 {
 		source.Layout.Height = 180
 	}
-	if source.Layout.Opacity == 0 {
+	if !opacityProvided {
 		source.Layout.Opacity = 1
 	}
 	if err := validateSource(source); err != nil {
@@ -416,9 +418,14 @@ func (s *Server) uiHandler() http.Handler {
 	})
 }
 
-func validateProjectState(project model.ProjectState) error {
+func validateProjectState(dataDir string, project model.ProjectState) error {
 	if project.Canvas.Width <= 0 || project.Canvas.Height <= 0 {
 		return fmt.Errorf("canvas width and height must be positive")
+	}
+	if project.Output.Mode == model.OutputModeHLS {
+		if _, err := stream.ResolveOutputPath(dataDir, project.Output.HLS.Path); err != nil {
+			return fmt.Errorf("invalid hls output path: %w", err)
+		}
 	}
 	seenSourceIDs := make(map[string]struct{}, len(project.Sources))
 	hlsSourceIDs := make(map[string]struct{}, len(project.Sources))
@@ -464,6 +471,9 @@ func validateSource(source model.Source) error {
 	case model.SourceKindText:
 		if source.Text == nil {
 			return fmt.Errorf("text source config is required")
+		}
+		if source.Text.BackgroundOpacity != nil && (*source.Text.BackgroundOpacity < 0 || *source.Text.BackgroundOpacity > 1) {
+			return fmt.Errorf("text background opacity must be between 0 and 1")
 		}
 		hasContent := strings.TrimSpace(source.Text.Content) != ""
 		hasRemote := source.Text.Remote != nil && strings.TrimSpace(source.Text.Remote.URL) != ""
@@ -524,9 +534,33 @@ func sanitizeName(name string) string {
 	return name
 }
 
+func decodeSourceCreateRequest(r *http.Request) (model.Source, bool, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return model.Source{}, false, err
+	}
+
+	var source model.Source
+	if err := json.Unmarshal(body, &source); err != nil {
+		return model.Source{}, false, err
+	}
+
+	var shape struct {
+		Layout struct {
+			Opacity *float64 `json:"opacity"`
+		} `json:"layout"`
+	}
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return model.Source{}, false, err
+	}
+
+	return source, shape.Layout.Opacity != nil, nil
+}
+
 func (s *Server) syncStream(project model.ProjectState) (model.StreamStatus, error) {
 	status := s.engine.Status()
 	if !status.Running {
+		s.engine.UpdateProject(project)
 		return status, nil
 	}
 

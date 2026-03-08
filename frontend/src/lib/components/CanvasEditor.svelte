@@ -124,6 +124,16 @@
     return Math.round(fontSize * 1.2 + lineSpacing);
   }
 
+  function colorWithOpacity(color, opacity) {
+    const normalized = (color || '#111827').replace('#', '');
+    const expanded = normalized.length === 3 ? normalized.split('').map((value) => value + value).join('') : normalized;
+    const red = Number.parseInt(expanded.slice(0, 2), 16) || 0;
+    const green = Number.parseInt(expanded.slice(2, 4), 16) || 0;
+    const blue = Number.parseInt(expanded.slice(4, 6), 16) || 0;
+    const alpha = Math.min(Math.max(opacity ?? 0.8, 0), 1);
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  }
+
   function styleForSource(source) {
     const styles = [
       `left:${source.layout.x}px`,
@@ -132,7 +142,7 @@
       `height:${source.layout.height}px`,
       source.kind === 'text' ? 'overflow:visible' : '',
       source.kind === 'text' ? 'background:transparent' : '',
-      source.kind === 'text' ? 'border-radius:0px' : `border-radius:${source.layout.radius ?? 0}px`,
+      `border-radius:${source.layout.radius ?? 0}px`,
       `opacity:${source.layout.opacity ?? 1}`,
       `z-index:${source.layout.zIndex ?? 0}`,
       source.id === selectedSourceId ? 'outline:2px solid rgba(246, 173, 85, 0.95)' : 'outline:1px solid rgba(255,255,255,0.14)',
@@ -150,13 +160,30 @@
     ].join(';');
   }
 
+  function canvasViewportStyle() {
+    return [`height:${scaledHeight}px`, `background:${project?.canvas?.editorBackgroundColor || '#020202'}`].join(';');
+  }
+
+  function textContainerStyle(source) {
+    return [
+      `font-family:${fontFamily(source)}`,
+      `font-size:${source.text?.fontSize || 42}px`,
+      `color:${source.text?.color || '#ffffff'}`,
+      `line-height:${textLineHeight(source)}px`,
+      `width:${source.layout.width}px`,
+      `height:${source.layout.height}px`,
+      `background:${colorWithOpacity(source.text?.backgroundColor || '#111827', source.text?.backgroundOpacity ?? 0.8)}`,
+      `border-radius:${source.layout.radius ?? 0}px`
+    ].join(';');
+  }
+
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
   }
 </script>
 
 <div class="canvas-shell">
-  <div class="canvas-viewport" bind:clientWidth={viewportWidth} style={`height:${scaledHeight}px`}>
+  <div class="canvas-viewport" bind:clientWidth={viewportWidth} style={canvasViewportStyle()}>
     <div class="canvas-stage" style={`transform:scale(${scale});transform-origin:top left;${canvasStyle()}`}>
       {#each sortedSources as source (source.id)}
         <div
@@ -175,8 +202,8 @@
               <div class="missing">Image asset missing</div>
             {/if}
           {:else if source.kind === 'text'}
-            <div class="text-fill" style={`font-family:${fontFamily(source)};font-size:${source.text?.fontSize || 42}px;color:${source.text?.color || '#ffffff'};line-height:${textLineHeight(source)}px;`}>
-              <span class="text-inline" style={`background:${source.text?.backgroundColor || '#111827'};border:${source.text?.borderWidth || 0}px solid ${source.text?.borderColor || '#000000'};`}>
+            <div class="text-fill" style={textContainerStyle(source)}>
+              <span class="text-inline">
                 {textPreviewContent(source)}
               </span>
             </div>

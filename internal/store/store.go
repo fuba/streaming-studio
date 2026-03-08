@@ -125,6 +125,9 @@ func normalizeState(state *model.ProjectState) {
 	if state.Canvas.BackgroundColor == "" {
 		state.Canvas.BackgroundColor = defaults.Canvas.BackgroundColor
 	}
+	if state.Canvas.EditorBackgroundColor == "" {
+		state.Canvas.EditorBackgroundColor = defaults.Canvas.EditorBackgroundColor
+	}
 	if state.Output.Mode == "" {
 		state.Output.Mode = defaults.Output.Mode
 	}
@@ -168,6 +171,10 @@ func normalizeState(state *model.ProjectState) {
 		state.Output.YouTube.AdditionalArgs = []string{}
 	}
 	for i := range state.Sources {
+		if state.Sources[i].Text != nil && state.Sources[i].Text.BackgroundOpacity == nil {
+			defaultOpacity := 0.8
+			state.Sources[i].Text.BackgroundOpacity = &defaultOpacity
+		}
 		if state.Sources[i].Text != nil && state.Sources[i].Text.Remote != nil && state.Sources[i].Text.Remote.RefreshIntervalSeconds < 0 {
 			state.Sources[i].Text.Remote.RefreshIntervalSeconds = 0
 		}

@@ -16,15 +16,18 @@ import (
 )
 
 type fakeEngine struct {
-	running    bool
-	startCalls int
-	stopCalls  int
-	status     model.StreamStatus
+	running     bool
+	startCalls  int
+	stopCalls   int
+	updateCalls int
+	lastProject model.ProjectState
+	status      model.StreamStatus
 }
 
 func (f *fakeEngine) Start(project model.ProjectState) (model.StreamStatus, error) {
 	f.startCalls++
 	f.running = true
+	f.lastProject = project
 	f.status = model.StreamStatus{Running: true, Mode: project.Output.Mode}
 	return f.status, nil
 }
@@ -41,6 +44,11 @@ func (f *fakeEngine) Status() model.StreamStatus {
 		f.status.Running = true
 	}
 	return f.status
+}
+
+func (f *fakeEngine) UpdateProject(project model.ProjectState) {
+	f.updateCalls++
+	f.lastProject = project
 }
 
 func TestStateEndpointReturnsDefaultProject(t *testing.T) {
@@ -109,6 +117,89 @@ func TestCreateSourceEndpointStoresNewSource(t *testing.T) {
 	}
 	if len(payload.Project.Sources) != 1 {
 		t.Fatalf("len(Sources) = %d, want 1", len(payload.Project.Sources))
+	}
+}
+
+func TestCreateTextSourceRejectsInvalidBackgroundOpacity(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	backgroundOpacity := 1.5
+	source := model.Source{
+		ID:      "text-1",
+		Name:    "Text",
+		Kind:    model.SourceKindText,
+		Enabled: true,
+		Layout: model.Layout{
+			Width:   400,
+			Height:  120,
+			Opacity: 1,
+		},
+		Text: &model.TextSource{
+			Content:           "hello",
+			BackgroundOpacity: &backgroundOpacity,
+		},
+	}
+
+	body, err := json.Marshal(source)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sources", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestStateEndpointUpdatesDesiredProjectWhenStreamStopped(t *testing.T) {
+	t.Parallel()
+
+	engine := &fakeEngine{}
+	server := newTestServerWithEngine(t, engine)
+	project := model.DefaultProjectState()
+	project.Sources = []model.Source{
+		{
+			ID:      "text-1",
+			Name:    "Text",
+			Kind:    model.SourceKindText,
+			Enabled: true,
+			Layout: model.Layout{
+				Width:   400,
+				Height:  120,
+				Opacity: 1,
+			},
+			Text: &model.TextSource{Content: "updated"},
+		},
+	}
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/state", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	if engine.updateCalls != 1 {
+		t.Fatalf("updateCalls = %d, want 1", engine.updateCalls)
+	}
+	if engine.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", engine.startCalls)
+	}
+	if len(engine.lastProject.Sources) != 1 || engine.lastProject.Sources[0].ID != "text-1" {
+		t.Fatalf("lastProject = %+v, want updated project", engine.lastProject)
 	}
 }
 
@@ -185,6 +276,29 @@ func TestStateEndpointRejectsUnknownAudioSourceID(t *testing.T) {
 	}
 }
 
+func TestStateEndpointRejectsUnsafeHLSOutputPath(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	project := model.DefaultProjectState()
+	project.Output.HLS.Path = "../../../tmp/live.m3u8"
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/state", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCreateSourceEndpointAllowsDisabledDraftHLS(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +328,47 @@ func TestCreateSourceEndpointAllowsDisabledDraftHLS(t *testing.T) {
 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateSourceEndpointKeepsExplicitZeroOpacity(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	source := model.Source{
+		ID:      "src-transparent",
+		Name:    "Transparent Overlay",
+		Kind:    model.SourceKindHLS,
+		Enabled: true,
+		Layout: model.Layout{
+			Width:   640,
+			Height:  360,
+			Opacity: 0,
+		},
+		HLS: &model.HLSSource{URL: "https://example.com/live.m3u8"},
+	}
+
+	body, err := json.Marshal(source)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sources", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload model.StateResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if payload.Project.Sources[0].Layout.Opacity != 0 {
+		t.Fatalf("Opacity = %v, want 0", payload.Project.Sources[0].Layout.Opacity)
 	}
 }
 
@@ -387,6 +542,16 @@ func newTestServer(t *testing.T) *Server {
 	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
 	logger := log.New(bytes.NewBuffer(nil), "", 0)
 	engine := stream.NewEngine(dataDir, filepath.Join(dataDir, "ffmpeg.log"), logger)
+
+	return NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+}
+
+func newTestServerWithEngine(t *testing.T, engine StreamController) *Server {
+	t.Helper()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
 
 	return NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
 }

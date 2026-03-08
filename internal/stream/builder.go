@@ -109,12 +109,11 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 			if source.Text == nil {
 				return BuildResult{}, fmt.Errorf("source %s is missing text payload", source.ID)
 			}
-			textFilter, err := buildDrawTextFilter(stageLabel, source, project.Assets, cfg.DataDir, stageIndex)
+			textFilters, nextStage, err := buildTextFilters(stageLabel, source, project.Assets, cfg.DataDir, stageIndex)
 			if err != nil {
 				return BuildResult{}, err
 			}
-			nextStage := fmt.Sprintf("stage%d", stageIndex)
-			filterParts = append(filterParts, textFilter+"["+nextStage+"]")
+			filterParts = append(filterParts, textFilters...)
 			stageLabel = nextStage
 			stageIndex++
 		}
@@ -145,7 +144,10 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 
 	switch project.Output.Mode {
 	case model.OutputModeHLS:
-		target := filepath.Join(cfg.DataDir, project.Output.HLS.Path)
+		target, err := ResolveOutputPath(cfg.DataDir, project.Output.HLS.Path)
+		if err != nil {
+			return BuildResult{}, err
+		}
 		segmentPattern := filepath.Join(filepath.Dir(target), "segment_%06d.ts")
 		args = append(args,
 			"-f", "hls",
@@ -197,7 +199,7 @@ func resolveAudioInput(project model.ProjectState, enabled []model.Source, input
 	return 0, false
 }
 
-func buildDrawTextFilter(stageLabel string, source model.Source, assets []model.Asset, dataDir string, stageIndex int) (string, error) {
+func buildTextFilters(stageLabel string, source model.Source, assets []model.Asset, dataDir string, stageIndex int) ([]string, string, error) {
 	text := source.Text
 	fontFile := ""
 	if text.FontAssetID != "" {
@@ -214,13 +216,34 @@ func buildDrawTextFilter(stageLabel string, source model.Source, assets []model.
 	}
 	textPath, err := prepareDrawtextFile(dataDir, source.ID, text.Content)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 
-	drawtext := fmt.Sprintf("[%s]drawtext=textfile='%s':reload=1:x=%d:y=%d:fontsize=%d:fontcolor=%s", stageLabel, escapeFFmpegPath(textPath), source.Layout.X, source.Layout.Y, text.FontSize, ffmpegColorWithAlpha(text.Color, source.Layout.Opacity))
+	filters := make([]string, 0, 2)
+	currentStage := stageLabel
+	backgroundOpacity := textBackgroundOpacity(text)
+	if text.BackgroundColor != "" && backgroundOpacity > 0 && source.Layout.Width > 0 && source.Layout.Height > 0 {
+		if radius := effectiveRadius(source.Layout.Width, source.Layout.Height, source.Layout.Radius); radius > 0 {
+			backgroundLabel := fmt.Sprintf("textbg%d", stageIndex)
+			filters = append(filters, fmt.Sprintf(
+				"color=c=%s:s=%dx%d,format=rgba%s[%s]",
+				ffmpegColorWithAlpha(text.BackgroundColor, backgroundOpacity),
+				source.Layout.Width,
+				source.Layout.Height,
+				roundedCornersFilter(source.Layout.Width, source.Layout.Height, radius),
+				backgroundLabel,
+			))
+
+			nextStage := fmt.Sprintf("stage%d", stageIndex)
+			filters = append(filters, fmt.Sprintf("[%s][%s]overlay=%d:%d:format=auto[%s]", currentStage, backgroundLabel, source.Layout.X, source.Layout.Y, nextStage))
+			currentStage = nextStage
+		}
+	}
+
+	drawtext := fmt.Sprintf("[%s]drawtext=textfile='%s':reload=1:x=%d:y=%d:fontsize=%d:fontcolor=%s", currentStage, escapeFFmpegPath(textPath), source.Layout.X, source.Layout.Y, text.FontSize, ffmpegColorWithAlpha(text.Color, source.Layout.Opacity))
 	drawtext += ":fontfile='" + escapeFFmpegPath(fontFile) + "'"
-	if text.BackgroundColor != "" {
-		drawtext += ":box=1:boxcolor=" + ffmpegColorWithAlpha(text.BackgroundColor, 0.8)
+	if text.BackgroundColor != "" && backgroundOpacity > 0 && source.Layout.Radius <= 0 {
+		drawtext += ":box=1:boxcolor=" + ffmpegColorWithAlpha(text.BackgroundColor, backgroundOpacity)
 	}
 	if text.BorderWidth > 0 {
 		drawtext += fmt.Sprintf(":borderw=%d:bordercolor=%s", text.BorderWidth, ffmpegColorWithAlpha(text.BorderColor, 1))
@@ -228,7 +251,9 @@ func buildDrawTextFilter(stageLabel string, source model.Source, assets []model.
 	if text.LineSpacing != 0 {
 		drawtext += fmt.Sprintf(":line_spacing=%d", text.LineSpacing)
 	}
-	return drawtext, nil
+	nextStage := fmt.Sprintf("stage%d", stageIndex)
+	filters = append(filters, drawtext+"["+nextStage+"]")
+	return filters, nextStage, nil
 }
 
 func ffmpegColor(input string) string {
@@ -259,6 +284,13 @@ func clampOpacity(value float64) float64 {
 		return 1
 	}
 	return value
+}
+
+func textBackgroundOpacity(text *model.TextSource) float64 {
+	if text == nil || text.BackgroundOpacity == nil {
+		return 0.8
+	}
+	return clampOpacity(*text.BackgroundOpacity)
 }
 
 func effectiveRadius(width, height, radius int) int {
@@ -298,7 +330,7 @@ func prepareDrawtextFile(dataDir, sourceID, content string) (string, error) {
 	}
 
 	targetPath := filepath.Join(textDir, sourceID+".txt")
-	if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+	if err := writeTextFile(targetPath, content); err != nil {
 		return "", err
 	}
 	return targetPath, nil
