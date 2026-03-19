@@ -296,6 +296,47 @@ func TestBuildFFmpegArgsWritesMultilineTextFile(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegArgsWrapsLongTextToSourceWidth(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	project := model.DefaultProjectState()
+	project.Sources = []model.Source{
+		{
+			ID:      "title-wrap",
+			Name:    "Wrapped Title",
+			Kind:    model.SourceKindText,
+			Enabled: true,
+			Layout: model.Layout{
+				X:       10,
+				Y:       20,
+				Width:   180,
+				Height:  120,
+				Opacity: 1,
+				ZIndex:  0,
+			},
+			Text: &model.TextSource{
+				Content:  "ABCDEFGHIJ",
+				FontSize: 40,
+				Color:    "#ffffff",
+			},
+		},
+	}
+
+	if _, err := BuildFFmpegArgs(project, BuildConfig{DataDir: dataDir}); err != nil {
+		t.Fatalf("BuildFFmpegArgs() returned error: %v", err)
+	}
+
+	textFile := filepath.Join(dataDir, "runtime", "text", "title-wrap.txt")
+	content, err := os.ReadFile(textFile)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) returned error: %v", textFile, err)
+	}
+	if !strings.Contains(string(content), "\n") {
+		t.Fatalf("text file content = %q, want wrapped text with newline", string(content))
+	}
+}
+
 func TestBuildFFmpegArgsOmitsTextBackgroundBoxWhenOpacityIsZero(t *testing.T) {
 	t.Parallel()
 

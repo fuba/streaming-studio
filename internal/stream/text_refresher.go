@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	neturl "net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +110,7 @@ func (r *TextRefresher) syncOnce(now time.Time) {
 		}
 
 		active[source.ID] = struct{}{}
-		signature := remoteURL + "\x00" + refreshInterval(source.Text.Remote).String()
+		signature := remoteSourceSignature(source)
 
 		r.mu.Lock()
 		nextPoll, hasNextPoll := r.nextPoll[source.ID]
@@ -122,7 +123,7 @@ func (r *TextRefresher) syncOnce(now time.Time) {
 
 		if err := r.fetchAndWrite(source); err != nil {
 			r.logger.Printf("remote text poll failed for %s: %v", source.ID, err)
-			if _, fallbackErr := prepareDrawtextFile(r.dataDir, source.ID, source.Text.Content); fallbackErr != nil {
+			if _, fallbackErr := prepareDrawtextFile(r.dataDir, source.ID, wrapTextForSource(source, source.Text.Content)); fallbackErr != nil {
 				r.logger.Printf("remote text fallback write failed for %s: %v", source.ID, fallbackErr)
 			}
 		}
@@ -164,7 +165,7 @@ func (r *TextRefresher) fetchAndWrite(source model.Source) error {
 		return err
 	}
 
-	_, err = prepareDrawtextFile(r.dataDir, source.ID, normalizeRemoteText(string(body)))
+	_, err = prepareDrawtextFile(r.dataDir, source.ID, wrapTextForSource(source, normalizeRemoteText(string(body))))
 	return err
 }
 
@@ -179,4 +180,19 @@ func refreshInterval(remote *model.RemoteTextSource) time.Duration {
 		return defaultRemoteTextRefreshInterval
 	}
 	return time.Duration(remote.RefreshIntervalSeconds) * time.Second
+}
+
+func remoteSourceSignature(source model.Source) string {
+	if source.Text == nil || source.Text.Remote == nil {
+		return ""
+	}
+
+	parts := []string{
+		strings.TrimSpace(source.Text.Remote.URL),
+		refreshInterval(source.Text.Remote).String(),
+		strconv.Itoa(source.Layout.Width),
+		strconv.Itoa(source.Text.FontSize),
+		source.Text.Content,
+	}
+	return strings.Join(parts, "\x00")
 }

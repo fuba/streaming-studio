@@ -426,6 +426,9 @@ func validateProjectState(dataDir string, project model.ProjectState) error {
 		if _, err := stream.ResolveOutputPath(dataDir, project.Output.HLS.Path); err != nil {
 			return fmt.Errorf("invalid hls output path: %w", err)
 		}
+		if err := validateHLSPublicPath(project.Output.HLS.PublicPath); err != nil {
+			return fmt.Errorf("invalid hls public path: %w", err)
+		}
 	}
 	seenSourceIDs := make(map[string]struct{}, len(project.Sources))
 	hlsSourceIDs := make(map[string]struct{}, len(project.Sources))
@@ -445,6 +448,28 @@ func validateProjectState(dataDir string, project model.ProjectState) error {
 		if _, ok := hlsSourceIDs[project.Output.AudioSourceID]; !ok {
 			return fmt.Errorf("audioSourceId %s does not reference an HLS source", project.Output.AudioSourceID)
 		}
+	}
+	return nil
+}
+
+func validateHLSPublicPath(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("public path is required")
+	}
+	if strings.HasPrefix(trimmed, "//") {
+		return fmt.Errorf("public path must be a local path")
+	}
+
+	parsed, err := neturl.Parse(trimmed)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "" || parsed.Host != "" {
+		return fmt.Errorf("public path must not include scheme or host")
+	}
+	if !strings.HasPrefix(parsed.Path, "/") {
+		return fmt.Errorf("public path must start with '/'")
 	}
 	return nil
 }
