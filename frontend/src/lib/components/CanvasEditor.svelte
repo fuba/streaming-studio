@@ -1,6 +1,7 @@
 <script>
   import { createEventDispatcher } from 'svelte';
   import HlsVideo from './HlsVideo.svelte';
+  import { normalizeHlsPlaybackUrl } from '../hlsUrl.js';
 
   export let project;
   export let selectedSourceId = '';
@@ -118,6 +119,15 @@
     return '';
   }
 
+  function sourceHlsPreviewUrl(source) {
+    return normalizeHlsPlaybackUrl(source?.hls?.url || '');
+  }
+
+  function sourceHlsMixedContentBlocked(source) {
+    const raw = typeof source?.hls?.url === 'string' ? source.hls.url.trim() : '';
+    return raw !== '' && sourceHlsPreviewUrl(source) === '';
+  }
+
   function textLineHeight(source) {
     const fontSize = source?.text?.fontSize || 42;
     const lineSpacing = source?.text?.lineSpacing || 0;
@@ -194,7 +204,13 @@
           on:click={() => selectSource(source.id)}
         >
           {#if source.kind === 'hls' && source.hls?.url}
-            <HlsVideo className="fill" src={source.hls.url} title={source.name} />
+            {#if sourceHlsPreviewUrl(source)}
+              <HlsVideo className="fill" src={sourceHlsPreviewUrl(source)} title={source.name} />
+            {:else if sourceHlsMixedContentBlocked(source)}
+              <div class="missing">Preview blocked by mixed content (`http://` on HTTPS)</div>
+            {:else}
+              <div class="missing">Invalid HLS URL</div>
+            {/if}
           {:else if source.kind === 'image'}
             {#if assetById(source.image?.assetId)?.url}
               <img class="fill" src={assetById(source.image?.assetId)?.url} alt={source.name} />

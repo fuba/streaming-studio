@@ -299,6 +299,29 @@ func TestStateEndpointRejectsUnsafeHLSOutputPath(t *testing.T) {
 	}
 }
 
+func TestStateEndpointRejectsAbsoluteHLSPublicPath(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	project := model.DefaultProjectState()
+	project.Output.HLS.PublicPath = "http://example.com/live/live.m3u8"
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/state", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCreateSourceEndpointAllowsDisabledDraftHLS(t *testing.T) {
 	t.Parallel()
 

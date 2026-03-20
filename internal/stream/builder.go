@@ -214,7 +214,7 @@ func buildTextFilters(stageLabel string, source model.Source, assets []model.Ass
 	if text.FontSize <= 0 {
 		text.FontSize = 42
 	}
-	textPath, err := prepareDrawtextFile(dataDir, source.ID, text.Content)
+	textPath, err := prepareDrawtextFile(dataDir, source.ID, wrapTextForSource(source, text.Content))
 	if err != nil {
 		return nil, "", err
 	}

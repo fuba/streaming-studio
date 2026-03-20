@@ -15,6 +15,8 @@ It is designed as a lightweight "web OBS"-style studio for HLS-first workflows:
 
 The application runs with Docker Compose and keeps all runtime state in a Docker volume.
 
+This project should be treated as a trusted control plane, not as a public-facing web app. The recommended deployment is to keep the container bound to localhost and publish it to your private tailnet with Tailscale Serve.
+
 ## What It Does
 
 Streaming Studio manages a single project state made of:
@@ -41,7 +43,7 @@ The server converts that project state into an FFmpeg `filter_complex` graph and
 - Output as local HLS
 - Output directly to YouTube Live through FFmpeg
 - Use the REST API directly without going through the UI
-- Run without authentication
+- Keep the app private behind Tailscale instead of exposing it directly to the internet
 
 ## Architecture
 
@@ -73,10 +75,10 @@ docker compose up --build -d
 Then open:
 
 ```text
-http://localhost:28080
+http://127.0.0.1:28080
 ```
 
-The host port is `28080`. The container still listens on `8080`, but the host-side mapping was moved because `8080` was already occupied in this environment.
+The host port is `28080`, bound to `127.0.0.1` only. The container still listens on `8080`, but the host-side mapping is intentionally loopback-only so the app is not exposed directly to the LAN or the public internet.
 
 To stop the stack:
 
@@ -96,9 +98,33 @@ The included `docker-compose.yml` is intentionally small:
 
 - one service: `studio`
 - one persistent volume: `studio-data`
-- host port: `28080`
+- host port: `127.0.0.1:28080`
 
 Persistent data is stored in the Docker volume and survives container recreation.
+
+## Recommended Remote Access: Tailscale Serve
+
+Streaming Studio has no built-in authentication. If you need remote access, the safest simple setup is:
+
+1. keep the container bound to `127.0.0.1:28080`
+2. install Tailscale on the Docker host
+3. publish the local service to your tailnet with `tailscale serve`
+
+Example:
+
+```bash
+docker compose up --build -d
+tailscale serve --bg 28080
+tailscale serve status
+```
+
+With this setup:
+
+- the app is reachable from devices in your tailnet
+- the app is not exposed directly on the host's LAN interface
+- Tailscale account access becomes the effective authentication layer
+
+If you want every tailnet member to access the app, keep your tailnet policy permissive for that node. If you want to restrict it, use Tailscale ACLs or grants.
 
 ## Persistent Files
 
@@ -141,6 +167,21 @@ The browser UI is split into three main areas:
   Edit the selected source or global project/output settings.
 
 The UI uses the same REST API that external clients can use.
+
+## Security Model
+
+Streaming Studio is intentionally lightweight and does not implement application-layer authentication or authorization.
+
+That means:
+
+- anyone who can reach the HTTP service can read state, upload assets, edit sources, and start or stop streams
+- YouTube stream keys and other sensitive output settings must be protected by network-layer access control
+
+Recommended practice:
+
+- do not expose `28080` directly on a public interface
+- keep the service bound to localhost
+- use Tailscale Serve, a VPN, or an authenticated reverse proxy in front of it
 
 ## Source Types
 

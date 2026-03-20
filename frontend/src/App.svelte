@@ -4,6 +4,7 @@
   import AssetUpload from './lib/components/AssetUpload.svelte';
   import CanvasEditor from './lib/components/CanvasEditor.svelte';
   import HlsVideo from './lib/components/HlsVideo.svelte';
+  import { normalizeHlsPlaybackUrl } from './lib/hlsUrl.js';
 
   const defaultProject = {
     canvas: {
@@ -66,6 +67,8 @@
   $: fontFaceCSS = fontAssets
     .map((asset) => `@font-face{font-family:'asset-${asset.id}';src:url('${asset.url}');font-display:swap;}`)
     .join('');
+  $: outputManifestUrl = normalizeHlsPlaybackUrl(project.output?.hls?.publicPath || '');
+  $: outputManifestBlocked = !!(project.output?.hls?.publicPath || '').trim() && !outputManifestUrl;
 
   onMount(() => {
     loadState();
@@ -562,7 +565,11 @@
         </div>
         <div class="hero-chip">
           <span class="status-label">HLS Output</span>
-          <a href={project.output.hls.publicPath} target="_blank" rel="noreferrer">{project.output.hls.publicPath}</a>
+          {#if outputManifestUrl}
+            <a href={outputManifestUrl} target="_blank" rel="noreferrer">{project.output.hls.publicPath}</a>
+          {:else}
+            <strong>{project.output.hls.publicPath || '/live/live.m3u8'}</strong>
+          {/if}
         </div>
         <div class="hero-chip hero-message">
           <span class="status-label">Messages</span>
@@ -659,11 +666,23 @@
               <h2>{project.output.mode === 'hls' ? 'Rendered HLS Output' : 'Program Preview'}</h2>
             </div>
             {#if project.output.mode === 'hls'}
-              <a class="inline-link" href={project.output.hls.publicPath} target="_blank" rel="noreferrer">Open manifest</a>
+              {#if outputManifestUrl}
+                <a class="inline-link" href={outputManifestUrl} target="_blank" rel="noreferrer">Open manifest</a>
+              {/if}
             {/if}
           </div>
           {#if project.output.mode === 'hls'}
-            <HlsVideo className="program-player" src={project.output.hls.publicPath} title="Rendered output" controls={true} muted={true} />
+            {#if outputManifestUrl}
+              <HlsVideo className="program-player" src={outputManifestUrl} title="Rendered output" controls={true} muted={true} />
+            {:else if outputManifestBlocked}
+              <div class="preview-unavailable">
+                HLS preview was blocked by mixed content. Use a relative/public path such as `/live/live.m3u8`.
+              </div>
+            {:else}
+              <div class="preview-unavailable">
+                Invalid HLS public path.
+              </div>
+            {/if}
           {:else}
             <div class="preview-unavailable">
               Local HLS preview is unavailable while output mode is `youtube`.
@@ -900,6 +919,9 @@
               <input type="text" value={project.output.hls.publicPath} on:input={(event) => updateProject((draft) => (draft.output.hls.publicPath = event.currentTarget.value))} />
             </label>
           </div>
+          {#if outputManifestBlocked}
+            <p class="error-text">`http://...` public URLs are blocked on HTTPS pages. Use a path like `/live/live.m3u8`.</p>
+          {/if}
         {:else}
           <div class="field-grid two">
             <label>
