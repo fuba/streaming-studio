@@ -85,6 +85,12 @@ func TestBuildFFmpegArgsForHLSOutput(t *testing.T) {
 
 	command := strings.Join(result.Args, " ")
 	assertContains(t, command, "https://example.com/live-a.m3u8")
+	assertContains(t, command, "-reconnect 1")
+	assertContains(t, command, "-reconnect_streamed 1")
+	assertContains(t, command, "-reconnect_on_network_error 1")
+	assertContains(t, command, "-reconnect_on_http_error 4xx,5xx")
+	assertContains(t, command, "-reconnect_delay_max 10")
+	assertContains(t, command, "-rw_timeout 15000000")
 	assertContains(t, command, filepath.Join(dataDir, "assets/images/overlay.png"))
 	assertContains(t, command, "textfile='")
 	assertContains(t, command, "boxcolor=#000000@0.800")

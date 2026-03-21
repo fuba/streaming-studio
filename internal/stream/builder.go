@@ -57,7 +57,7 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 			if source.HLS == nil || source.HLS.URL == "" {
 				return BuildResult{}, fmt.Errorf("source %s is missing HLS URL", source.ID)
 			}
-			args = append(args, "-fflags", "+genpts", "-i", source.HLS.URL)
+			args = append(args, buildHLSInputArgs(source.HLS.URL)...)
 		case model.SourceKindImage:
 			if source.Image == nil || source.Image.AssetID == "" {
 				return BuildResult{}, fmt.Errorf("source %s is missing image asset", source.ID)
@@ -171,6 +171,19 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 	}
 
 	return BuildResult{Args: args}, nil
+}
+
+func buildHLSInputArgs(url string) []string {
+	return []string{
+		"-fflags", "+genpts",
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_on_network_error", "1",
+		"-reconnect_on_http_error", "4xx,5xx",
+		"-reconnect_delay_max", "10",
+		"-rw_timeout", "15000000",
+		"-i", url,
+	}
 }
 
 func assetPathByID(assets []model.Asset, dataDir, assetID string) (string, error) {
