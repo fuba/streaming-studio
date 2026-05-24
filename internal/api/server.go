@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -8,11 +9,14 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,12 +33,32 @@ type Server struct {
 	logger    *log.Logger
 }
 
+type streamRunState struct {
+	ShouldRun bool      `json:"shouldRun"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type runtimeStreamHealth struct {
+	Running            bool             `json:"running"`
+	StreamMode         model.OutputMode `json:"streamMode"`
+	Status             string           `json:"status"`
+	Message            string           `json:"message"`
+	LogUpdatedAt       *time.Time       `json:"logUpdatedAt,omitempty"`
+	AnalysisLineLimit  int              `json:"analysisLineLimit"`
+	CriticalEventCount int              `json:"criticalEventCount"`
+	WarningEventCount  int              `json:"warningEventCount"`
+	CriticalEvents     []string         `json:"criticalEvents"`
+	WarningEvents      []string         `json:"warningEvents"`
+}
+
 type StreamController interface {
 	Start(project model.ProjectState) (model.StreamStatus, error)
 	Stop() (model.StreamStatus, error)
 	Status() model.StreamStatus
 	UpdateProject(project model.ProjectState)
 }
+
+var rtmpStreamURLPattern = regexp.MustCompile(`rtmps?://[^\s]+/live2/[^\s]+`)
 
 func NewServer(store *store.FileStore, engine StreamController, dataDir, uiDistDir string, logger *log.Logger) *Server {
 	return &Server{
@@ -54,6 +78,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/sources", s.handleSources)
 	mux.HandleFunc("/api/v1/sources/", s.handleSourceByID)
 	mux.HandleFunc("/api/v1/runtime/texts", s.handleRuntimeTexts)
+	mux.HandleFunc("/api/v1/runtime/stream-health", s.handleRuntimeStreamHealth)
+	mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	mux.HandleFunc("/api/v1/assets/images", s.handleImageUpload)
 	mux.HandleFunc("/api/v1/assets/fonts", s.handleFontUpload)
 	mux.HandleFunc("/api/v1/stream/start", s.handleStreamStart)
@@ -67,17 +93,24 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			s.logger.Printf("request method=%s path=%s status=%d duration=%s remote=%s ua=%q", r.Method, r.URL.Path, http.StatusNoContent, "0s", requestSource(r), r.UserAgent())
 			return
 		}
 
 		started := time.Now()
-		next.ServeHTTP(w, r)
-		s.logger.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(started).String())
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(recorder, r)
+		s.logger.Printf(
+			"request method=%s path=%s status=%d duration=%s remote=%s ua=%q",
+			r.Method,
+			r.URL.Path,
+			recorder.status,
+			time.Since(started).String(),
+			requestSource(r),
+			r.UserAgent(),
+		)
 	})
 }
 
@@ -325,6 +358,117 @@ func (s *Server) handleRuntimeTexts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func (s *Server) handleRuntimeStreamHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	streamStatus := s.engine.Status()
+	health := runtimeStreamHealth{
+		Running:           streamStatus.Running,
+		StreamMode:        streamStatus.Mode,
+		AnalysisLineLimit: 400,
+		CriticalEvents:    []string{},
+		WarningEvents:     []string{},
+	}
+
+	ffmpegLogPath, err := s.logPathByTarget("ffmpeg")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	info, err := os.Stat(ffmpegLogPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			health.Status = "ok"
+			if !streamStatus.Running {
+				health.Status = "idle"
+				health.Message = "stream is not running"
+			} else {
+				health.Message = "no ffmpeg log file yet"
+			}
+			writeJSON(w, http.StatusOK, health)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	updatedAt := info.ModTime().UTC()
+	health.LogUpdatedAt = &updatedAt
+
+	lines, _, err := readLogTail(ffmpegLogPath, health.AnalysisLineLimit, 512*1024)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	analyzeFFmpegHealth(s.redactLogLines(lines), &health)
+	writeJSON(w, http.StatusOK, health)
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	target := strings.TrimSpace(r.URL.Query().Get("target"))
+	if target == "" {
+		target = "server"
+	}
+
+	lines := 200
+	if rawLines := strings.TrimSpace(r.URL.Query().Get("lines")); rawLines != "" {
+		parsed, err := strconv.Atoi(rawLines)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid lines"))
+			return
+		}
+		lines = parsed
+	}
+	if lines < 1 || lines > 2000 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("lines must be between 1 and 2000"))
+		return
+	}
+
+	path, err := s.logPathByTarget(target)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Errorf("log file not found"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	linesPayload, truncated, err := readLogTail(path, lines, 512*1024)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	linesPayload = s.redactLogLines(linesPayload)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"target":     target,
+		"lines":      linesPayload,
+		"truncated":  truncated,
+		"updatedAt":  info.ModTime().UTC(),
+		"lineLimit":  lines,
+		"byteWindow": 512 * 1024,
+	})
+}
+
 func (s *Server) persistUpload(file multipart.File, header *multipart.FileHeader, kind model.AssetKind, folder string) (model.Asset, error) {
 	id := newID(string(kind))
 	name := sanitizeName(header.Filename)
@@ -358,11 +502,176 @@ func (s *Server) persistUpload(file multipart.File, header *multipart.FileHeader
 	}, nil
 }
 
+func (s *Server) logPathByTarget(target string) (string, error) {
+	switch target {
+	case "server":
+		return filepath.Join(s.dataDir, "logs", "server.log"), nil
+	case "ffmpeg":
+		return filepath.Join(s.dataDir, "logs", "ffmpeg.log"), nil
+	default:
+		return "", fmt.Errorf("unsupported log target: %s", target)
+	}
+}
+
+func (s *Server) redactLogLines(lines []string) []string {
+	project, err := s.store.Load()
+	streamKey := ""
+	if err == nil {
+		streamKey = strings.TrimSpace(project.Output.YouTube.StreamKey)
+	}
+
+	redacted := make([]string, 0, len(lines))
+	for _, line := range lines {
+		redacted = append(redacted, redactLogLine(line, streamKey))
+	}
+	return redacted
+}
+
+func redactLogLine(line string, streamKey string) string {
+	if streamKey != "" {
+		line = strings.ReplaceAll(line, streamKey, "[REDACTED_STREAM_KEY]")
+	}
+	return rtmpStreamURLPattern.ReplaceAllString(line, "rtmp://[REDACTED]/live2/[REDACTED_STREAM_KEY]")
+}
+
+func readLogTail(path string, lineLimit int, maxBytes int64) ([]string, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+
+	size := info.Size()
+	start := int64(0)
+	if size > maxBytes {
+		start = size - maxBytes
+	}
+
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+
+	body, err := io.ReadAll(file)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if start > 0 {
+		if newline := bytes.IndexByte(body, '\n'); newline >= 0 && newline+1 < len(body) {
+			body = body[newline+1:]
+		}
+	}
+
+	rawLines := strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
+	filtered := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	truncated := start > 0
+	if len(filtered) > lineLimit {
+		filtered = filtered[len(filtered)-lineLimit:]
+		truncated = true
+	}
+
+	return filtered, truncated, nil
+}
+
+func analyzeFFmpegHealth(lines []string, health *runtimeStreamHealth) {
+	normalized := normalizeLogLines(lines)
+	criticalPatterns := []string{
+		"broken pipe",
+		"error writing trailer",
+		"error closing file",
+		"conversion failed",
+	}
+	warningPatterns := []string{
+		"connection refused",
+		"failed to reload playlist",
+		"http error",
+		"thread message queue blocking",
+	}
+
+	for _, line := range normalized {
+		lower := strings.ToLower(line)
+		if containsAny(lower, criticalPatterns) {
+			health.CriticalEvents = append(health.CriticalEvents, line)
+			continue
+		}
+		if containsAny(lower, warningPatterns) {
+			health.WarningEvents = append(health.WarningEvents, line)
+		}
+	}
+
+	health.CriticalEvents = tailLines(health.CriticalEvents, 20)
+	health.WarningEvents = tailLines(health.WarningEvents, 20)
+	health.CriticalEventCount = len(health.CriticalEvents)
+	health.WarningEventCount = len(health.WarningEvents)
+
+	switch {
+	case !health.Running:
+		health.Status = "idle"
+		health.Message = "stream is not running"
+	case health.CriticalEventCount > 0:
+		health.Status = "error"
+		health.Message = "ffmpeg critical events detected"
+	case health.WarningEventCount > 0:
+		health.Status = "warning"
+		health.Message = "ffmpeg warning events detected"
+	default:
+		health.Status = "ok"
+		health.Message = "no ffmpeg warning/error signature detected"
+	}
+}
+
+func normalizeLogLines(lines []string) []string {
+	normalized := make([]string, 0, len(lines))
+	for _, line := range lines {
+		parts := strings.FieldsFunc(strings.ReplaceAll(line, "\r\n", "\n"), func(r rune) bool {
+			return r == '\n' || r == '\r'
+		})
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			normalized = append(normalized, trimmed)
+		}
+	}
+	return normalized
+}
+
+func containsAny(line string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.Contains(line, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func tailLines(lines []string, limit int) []string {
+	if len(lines) <= limit {
+		return lines
+	}
+	return lines[len(lines)-limit:]
+}
+
 func (s *Server) handleStreamStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w)
 		return
 	}
+	s.logger.Printf("stream start requested remote=%s ua=%q", requestSource(r), r.UserAgent())
 
 	project, err := s.store.Load()
 	if err != nil {
@@ -375,6 +684,7 @@ func (s *Server) handleStreamStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	s.persistStreamRunState(true)
 	writeJSON(w, http.StatusOK, model.StateResponse{Project: project, Stream: status})
 }
 
@@ -383,6 +693,7 @@ func (s *Server) handleStreamStop(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w)
 		return
 	}
+	s.logger.Printf("stream stop requested via api remote=%s ua=%q", requestSource(r), r.UserAgent())
 
 	project, err := s.store.Load()
 	if err != nil {
@@ -395,6 +706,7 @@ func (s *Server) handleStreamStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.persistStreamRunState(false)
 	writeJSON(w, http.StatusOK, model.StateResponse{Project: project, Stream: status})
 }
 
@@ -559,6 +871,54 @@ func sanitizeName(name string) string {
 	return name
 }
 
+func (s *Server) streamRunStatePath() string {
+	return filepath.Join(s.dataDir, "runtime", "stream-run-state.json")
+}
+
+func (s *Server) persistStreamRunState(shouldRun bool) {
+	path := s.streamRunStatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		s.logger.Printf("failed to create runtime dir for stream run state: %v", err)
+		return
+	}
+	payload := streamRunState{
+		ShouldRun: shouldRun,
+		UpdatedAt: time.Now().UTC(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Printf("failed to marshal stream run state: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		s.logger.Printf("failed to write stream run state: %v", err)
+	}
+}
+
+func requestSource(r *http.Request) string {
+	forwardedFor := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwardedFor != "" {
+		parts := strings.Split(forwardedFor, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
 func decodeSourceCreateRequest(r *http.Request) (model.Source, bool, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -588,6 +948,7 @@ func (s *Server) syncStream(project model.ProjectState) (model.StreamStatus, err
 		s.engine.UpdateProject(project)
 		return status, nil
 	}
+	s.logger.Printf("stream stop requested for sync reload mode=%s", status.Mode)
 
 	if _, err := s.engine.Stop(); err != nil {
 		return s.engine.Status(), err

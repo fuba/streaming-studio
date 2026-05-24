@@ -199,6 +199,29 @@ a {
   white-space: nowrap;
 }
 
+.hero-chip.chip-ok {
+  border-color: #3f3f3f;
+}
+
+.hero-chip.chip-warn {
+  border-color: #7a7a7a;
+  background: #0b0b0b;
+}
+
+.hero-chip.chip-error {
+  border-color: #b0b0b0;
+  background: #101010;
+}
+
+.health-msg {
+  min-width: 0;
+  max-width: min(24rem, 100%);
+  color: #a7a7a7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hero-message {
   max-width: min(34rem, 100%);
 }
@@ -253,6 +276,17 @@ a {
   display: flex;
   gap: 0.4rem;
   flex-wrap: wrap;
+}
+
+.console-toolbar {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.log-toolbar input {
+  max-width: 7rem;
 }
 
 .source-list,

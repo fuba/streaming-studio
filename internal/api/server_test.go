@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"streaming-studio/internal/model"
@@ -70,6 +71,24 @@ func TestStateEndpointReturnsDefaultProject(t *testing.T) {
 	}
 	if payload.Project.Canvas.Width != 1280 {
 		t.Fatalf("Canvas.Width = %d, want 1280", payload.Project.Canvas.Width)
+	}
+}
+
+func TestMiddlewareDoesNotAllowArbitraryCrossOriginAccess(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodOptions, "/api/v1/state", nil)
+	request.Header.Set("Origin", "https://example.invalid")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", recorder.Code)
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
 	}
 }
 
@@ -555,6 +574,276 @@ func TestRuntimeTextsEndpointReturnsResolvedText(t *testing.T) {
 	}
 	if payload["text-1"] != "resolved" {
 		t.Fatalf("payload[text-1] = %q, want resolved", payload["text-1"])
+	}
+}
+
+func TestLogsEndpointReturnsTailLines(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
+	engine := &fakeEngine{}
+	server := NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+
+	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() returned error: %v", err)
+	}
+	serverLog := filepath.Join(dataDir, "logs", "server.log")
+	if err := os.WriteFile(serverLog, []byte("line-1\nline-2\nline-3\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/logs?target=server&lines=2", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload struct {
+		Target    string   `json:"target"`
+		Lines     []string `json:"lines"`
+		Truncated bool     `json:"truncated"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if payload.Target != "server" {
+		t.Fatalf("target = %q, want server", payload.Target)
+	}
+	if len(payload.Lines) != 2 || payload.Lines[0] != "line-2" || payload.Lines[1] != "line-3" {
+		t.Fatalf("lines = %#v, want [line-2 line-3]", payload.Lines)
+	}
+	if !payload.Truncated {
+		t.Fatalf("truncated = false, want true")
+	}
+}
+
+func TestLogsEndpointRedactsYouTubeStreamKey(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	project := model.DefaultProjectState()
+	project.Output.Mode = model.OutputModeYouTube
+	project.Output.YouTube.StreamKey = "secret-stream-key"
+	if err := stateStore.Save(project); err != nil {
+		t.Fatalf("stateStore.Save() returned error: %v", err)
+	}
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
+	engine := &fakeEngine{}
+	server := NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+
+	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() returned error: %v", err)
+	}
+	ffmpegLog := filepath.Join(dataDir, "logs", "ffmpeg.log")
+	logBody := "Error writing trailer of rtmp://a.rtmp.youtube.com/live2/secret-stream-key: Broken pipe\n"
+	if err := os.WriteFile(ffmpegLog, []byte(logBody), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/logs?target=ffmpeg&lines=10", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload struct {
+		Lines []string `json:"lines"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	body := strings.Join(payload.Lines, "\n")
+	if strings.Contains(body, "secret-stream-key") {
+		t.Fatalf("log response leaked stream key: %s", body)
+	}
+	if !strings.Contains(body, "[REDACTED_STREAM_KEY]") {
+		t.Fatalf("log response = %q, want redaction marker", body)
+	}
+}
+
+func TestLogsEndpointRejectsUnknownTarget(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/logs?target=invalid", nil)
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeStreamHealthEndpointReturnsWarning(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
+	engine := &fakeEngine{running: true, status: model.StreamStatus{Running: true, Mode: model.OutputModeYouTube}}
+	server := NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+
+	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() returned error: %v", err)
+	}
+	ffmpegLogPath := filepath.Join(dataDir, "logs", "ffmpeg.log")
+	logBody := "frame=1 fps=30\n[tcp @ 0x1] Connection to tcp://kirgizu:5000 failed: Connection refused\n"
+	if err := os.WriteFile(ffmpegLogPath, []byte(logBody), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/stream-health", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if payload["status"] != "warning" {
+		t.Fatalf("status = %#v, want warning", payload["status"])
+	}
+}
+
+func TestRuntimeStreamHealthEndpointReturnsError(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
+	engine := &fakeEngine{running: true, status: model.StreamStatus{Running: true, Mode: model.OutputModeYouTube}}
+	server := NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+
+	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() returned error: %v", err)
+	}
+	ffmpegLogPath := filepath.Join(dataDir, "logs", "ffmpeg.log")
+	logBody := "av_interleaved_write_frame(): Broken pipe\nError writing trailer of rtmp://a.rtmp.youtube.com/live2/xxx: Broken pipe\n"
+	if err := os.WriteFile(ffmpegLogPath, []byte(logBody), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/stream-health", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if payload["status"] != "error" {
+		t.Fatalf("status = %#v, want error", payload["status"])
+	}
+}
+
+func TestRuntimeStreamHealthEndpointRedactsYouTubeStreamKey(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	project := model.DefaultProjectState()
+	project.Output.Mode = model.OutputModeYouTube
+	project.Output.YouTube.StreamKey = "secret-health-key"
+	if err := stateStore.Save(project); err != nil {
+		t.Fatalf("stateStore.Save() returned error: %v", err)
+	}
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
+	engine := &fakeEngine{running: true, status: model.StreamStatus{Running: true, Mode: model.OutputModeYouTube}}
+	server := NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+
+	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll() returned error: %v", err)
+	}
+	ffmpegLogPath := filepath.Join(dataDir, "logs", "ffmpeg.log")
+	logBody := "Error writing trailer of rtmp://a.rtmp.youtube.com/live2/secret-health-key: Broken pipe\n"
+	if err := os.WriteFile(ffmpegLogPath, []byte(logBody), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/stream-health", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var payload struct {
+		CriticalEvents []string `json:"criticalEvents"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	body := strings.Join(payload.CriticalEvents, "\n")
+	if strings.Contains(body, "secret-health-key") {
+		t.Fatalf("health response leaked stream key: %s", body)
+	}
+	if !strings.Contains(body, "[REDACTED_STREAM_KEY]") {
+		t.Fatalf("health response = %q, want redaction marker", body)
+	}
+}
+
+func TestStreamStartStopPersistRunState(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	stateStore := store.NewFileStore(filepath.Join(dataDir, "state.json"))
+	logger := log.New(bytes.NewBuffer(nil), "", 0)
+	engine := &fakeEngine{}
+	server := NewServer(stateStore, engine, dataDir, filepath.Join(dataDir, "dist"), logger)
+
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/v1/stream/start", nil)
+	startRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(startRecorder, startRequest)
+	if startRecorder.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200: %s", startRecorder.Code, startRecorder.Body.String())
+	}
+
+	runStatePath := filepath.Join(dataDir, "runtime", "stream-run-state.json")
+	runStateRaw, err := os.ReadFile(runStatePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) returned error: %v", runStatePath, err)
+	}
+	var runState map[string]any
+	if err := json.Unmarshal(runStateRaw, &runState); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if shouldRun, ok := runState["shouldRun"].(bool); !ok || !shouldRun {
+		t.Fatalf("shouldRun = %#v, want true", runState["shouldRun"])
+	}
+
+	stopRequest := httptest.NewRequest(http.MethodPost, "/api/v1/stream/stop", nil)
+	stopRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(stopRecorder, stopRequest)
+	if stopRecorder.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, want 200: %s", stopRecorder.Code, stopRecorder.Body.String())
+	}
+
+	runStateRaw, err = os.ReadFile(runStatePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) returned error: %v", runStatePath, err)
+	}
+	if err := json.Unmarshal(runStateRaw, &runState); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if shouldRun, ok := runState["shouldRun"].(bool); !ok || shouldRun {
+		t.Fatalf("shouldRun = %#v, want false", runState["shouldRun"])
 	}
 }
 

@@ -58,7 +58,28 @@
   let runtimeTexts = {};
   let pollTimer;
   let runtimeTextTimer;
+  let logsTimer;
   let persistedSourceIds = new Set();
+  let consoleView = 'logs';
+  let logTarget = 'server';
+  const logLineLimit = 20;
+  let logLines = [];
+  let logTruncated = false;
+  let logUpdatedAt = '';
+  let logCount = 0;
+  let logsLoading = false;
+  let logsError = '';
+  let streamHealth = {
+    running: false,
+    streamMode: '',
+    status: 'idle',
+    message: '',
+    logUpdatedAt: '',
+    criticalEventCount: 0,
+    warningEventCount: 0
+  };
+  let streamHealthLoading = false;
+  let streamHealthError = '';
 
   $: imageAssets = project.assets.filter((asset) => asset.kind === 'image');
   $: fontAssets = project.assets.filter((asset) => asset.kind === 'font');
@@ -69,19 +90,29 @@
     .join('');
   $: outputManifestUrl = normalizeHlsPlaybackUrl(project.output?.hls?.publicPath || '');
   $: outputManifestBlocked = !!(project.output?.hls?.publicPath || '').trim() && !outputManifestUrl;
+  $: streamHealthStatus = streamHealth?.status || 'idle';
+  $: streamHealthMessage = streamHealthError
+    ? `failed: ${streamHealthError}`
+    : (streamHealth?.message || (streamHealthLoading ? 'loading...' : 'n/a'));
 
   onMount(() => {
     loadState();
     refreshRuntimeTexts();
+    refreshStreamHealth();
     pollTimer = window.setInterval(() => {
       refreshState();
     }, 5000);
     runtimeTextTimer = window.setInterval(() => {
       refreshRuntimeTexts();
     }, 2000);
+    refreshLogs();
+    logsTimer = window.setInterval(() => {
+      refreshLogs();
+    }, 3000);
     return () => {
       window.clearInterval(pollTimer);
       window.clearInterval(runtimeTextTimer);
+      window.clearInterval(logsTimer);
     };
   });
 
@@ -98,6 +129,7 @@
         selectedSourceId = project.sources[0]?.id ?? '';
       }
       await refreshRuntimeTexts();
+      await refreshStreamHealth();
       errorMessage = '';
     } catch (error) {
       errorMessage = error.message;
@@ -116,6 +148,7 @@
         persistedSourceIds = sourceIdSet(project);
       }
       await refreshRuntimeTexts();
+      await refreshStreamHealth();
     } catch {
     }
   }
@@ -124,6 +157,46 @@
     try {
       runtimeTexts = await api.getRuntimeTexts();
     } catch {
+    }
+  }
+
+  async function refreshLogs() {
+    if (consoleView !== 'logs') {
+      return;
+    }
+    logsLoading = true;
+    try {
+      const payload = await api.getLogs(logTarget, logLineLimit);
+      if (!payload || typeof payload !== 'object' || !Array.isArray(payload.lines)) {
+        throw new Error('invalid logs response');
+      }
+      logLines = (payload?.lines ?? []).map((line) => String(line)).reverse();
+      logCount = logLines.length;
+      logTruncated = !!payload?.truncated;
+      logUpdatedAt = payload?.updatedAt ?? '';
+      logsError = '';
+    } catch (error) {
+      logLines = [];
+      logCount = 0;
+      logsError = error.message;
+    } finally {
+      logsLoading = false;
+    }
+  }
+
+  async function refreshStreamHealth() {
+    streamHealthLoading = true;
+    try {
+      const payload = await api.getStreamHealth();
+      streamHealth = {
+        ...streamHealth,
+        ...(payload ?? {})
+      };
+      streamHealthError = '';
+    } catch (error) {
+      streamHealthError = error.message;
+    } finally {
+      streamHealthLoading = false;
     }
   }
 
@@ -543,6 +616,12 @@
   function streamCommand() {
     return stream.command?.length ? stream.command.join(' ') : 'ffmpeg command will appear here after start';
   }
+
+  $: logBodyText = logsError
+    ? `failed to load logs: ${logsError}`
+    : logCount === 0
+      ? (logsLoading ? 'loading logs...' : 'no log lines')
+      : logLines.join('\n');
 </script>
 
 <svelte:head>
@@ -562,6 +641,11 @@
         <div class="hero-chip">
           <span class="status-label">Dirty State</span>
           <strong>{dirty ? 'Unsaved changes' : 'Saved'}</strong>
+        </div>
+        <div class="hero-chip" class:chip-ok={streamHealthStatus === 'ok'} class:chip-warn={streamHealthStatus === 'warning'} class:chip-error={streamHealthStatus === 'error'}>
+          <span class="status-label">Stream Health</span>
+          <strong>{streamHealthStatus}</strong>
+          <span class="health-msg">{streamHealthMessage}</span>
         </div>
         <div class="hero-chip">
           <span class="status-label">HLS Output</span>
@@ -693,11 +777,36 @@
         <article class="panel console-card">
           <div class="panel-header">
             <div>
-              <p class="panel-eyebrow">FFmpeg</p>
-              <h2>Current Command</h2>
+              <p class="panel-eyebrow">Console</p>
+              <h2>{consoleView === 'logs' ? 'Logs' : 'Current Command'}</h2>
+            </div>
+            <div class="console-toolbar">
+              <button class="ghost" on:click={() => (consoleView = 'logs')}>Logs</button>
+              <button class="ghost" on:click={() => (consoleView = 'command')}>Command</button>
             </div>
           </div>
-          <pre>{streamCommand()}</pre>
+          {#if consoleView === 'logs'}
+            <div class="console-toolbar log-toolbar">
+              <select bind:value={logTarget} on:change={refreshLogs}>
+                <option value="server">server.log</option>
+                <option value="ffmpeg">ffmpeg.log</option>
+              </select>
+              <button class="ghost" on:click={refreshStreamHealth}>Refresh Health</button>
+              <button class="ghost" on:click={refreshLogs}>Refresh</button>
+            </div>
+            <p class="panel-eyebrow">
+              Health: {streamHealth.status || 'idle'} / Message: {streamHealthError ? `failed to load: ${streamHealthError}` : (streamHealth.message || (streamHealthLoading ? 'loading...' : 'n/a'))}
+            </p>
+            <p class="panel-eyebrow">
+              Critical: {streamHealth.criticalEventCount || 0} / Warning: {streamHealth.warningEventCount || 0} / Updated: {streamHealth.logUpdatedAt || 'n/a'}
+            </p>
+            {#if logUpdatedAt}
+              <p class="panel-eyebrow">Updated: {logUpdatedAt} / Count: {logCount}{logTruncated ? ' (truncated)' : ''}</p>
+            {/if}
+            <pre>{logBodyText}</pre>
+          {:else}
+            <pre>{streamCommand()}</pre>
+          {/if}
         </article>
       </div>
     </section>
