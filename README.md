@@ -15,7 +15,7 @@ It is designed as a lightweight "web OBS"-style studio for HLS-first workflows:
 
 The application runs with Docker Compose and keeps all runtime state in a Docker volume.
 
-This project should be treated as a trusted control plane, not as a public-facing web app. The recommended deployment is to keep the container bound to localhost and publish it to your private tailnet with Tailscale Serve.
+This project should be treated as a trusted control plane, not as a public-facing web app. The included Compose file binds to loopback by default; use a VPN, firewall, or authenticated reverse proxy before exposing it to other machines.
 
 ## What It Does
 
@@ -43,7 +43,7 @@ The server converts that project state into an FFmpeg `filter_complex` graph and
 - Output as local HLS
 - Output directly to YouTube Live through FFmpeg
 - Use the REST API directly without going through the UI
-- Keep the app private behind Tailscale instead of exposing it directly to the internet
+- Keep the app on a trusted LAN or behind Tailscale/VPN instead of exposing it directly to the internet
 
 ## Architecture
 
@@ -78,7 +78,7 @@ Then open:
 http://127.0.0.1:28080
 ```
 
-The host port is `28080`, bound to `127.0.0.1` only. The container still listens on `8080`, but the host-side mapping is intentionally loopback-only so the app is not exposed directly to the LAN or the public internet.
+The host port is `28080`. The included Compose file binds it to `127.0.0.1` by default.
 
 To stop the stack:
 
@@ -98,17 +98,18 @@ The included `docker-compose.yml` is intentionally small:
 
 - one service: `studio`
 - one persistent volume: `studio-data`
-- host port: `127.0.0.1:28080`
+- host port: `28080`
+- bind address: `${STUDIO_BIND_ADDR:-127.0.0.1}`
 
 Persistent data is stored in the Docker volume and survives container recreation.
 
-## Recommended Remote Access: Tailscale Serve
+## Recommended Remote Access
 
 Streaming Studio has no built-in authentication. If you need remote access, the safest simple setup is:
 
-1. keep the container bound to `127.0.0.1:28080`
-2. install Tailscale on the Docker host
-3. publish the local service to your tailnet with `tailscale serve`
+1. keep the service bound to loopback by default
+2. install Tailscale or another VPN on the Docker host if remote access is needed
+3. optionally publish the local service to your tailnet with `tailscale serve`
 
 Example:
 
@@ -121,7 +122,7 @@ tailscale serve status
 With this setup:
 
 - the app is reachable from devices in your tailnet
-- the app is not exposed directly on the host's LAN interface
+- access is still controlled by the host loopback binding, firewall, and tailnet policy
 - Tailscale account access becomes the effective authentication layer
 
 If you want every tailnet member to access the app, keep your tailnet policy permissive for that node. If you want to restrict it, use Tailscale ACLs or grants.
@@ -180,8 +181,8 @@ That means:
 Recommended practice:
 
 - do not expose `28080` directly on a public interface
-- keep the service bound to localhost
-- use Tailscale Serve, a VPN, or an authenticated reverse proxy in front of it
+- restrict access to a trusted LAN, Tailscale, a VPN, or an authenticated reverse proxy
+- if you explicitly need direct LAN access, set `STUDIO_BIND_ADDR=0.0.0.0` and keep the host network trusted
 
 ## Source Types
 
@@ -512,6 +513,8 @@ The Vite development server proxies:
 to the backend on port `8080`.
 
 ## Troubleshooting
+
+For detailed HLS-to-YouTube stutter diagnosis, including the timestamp issue caused by `-use_wallclock_as_timestamps`, see [Streaming Diagnostics](docs/streaming-diagnostics.md).
 
 ### The browser UI loads but the stream does not start
 

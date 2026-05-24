@@ -43,9 +43,12 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 	args := []string{
 		"-hide_banner",
 		"-y",
+	}
+	args = append(args,
+		"-re",
 		"-f", "lavfi",
 		"-i", fmt.Sprintf("color=c=%s:s=%dx%d:r=%d", ffmpegColor(project.Canvas.BackgroundColor), project.Canvas.Width, project.Canvas.Height, project.Output.FrameRate),
-	}
+	)
 
 	inputIndexes := make(map[string]int)
 	nextInput := 1
@@ -87,7 +90,7 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 			currentSourceLabel := fmt.Sprintf("src%d", stageIndex)
 			videoFilter := fmt.Sprintf("%sscale=%d:%d:flags=lanczos,format=rgba", inputLabel, source.Layout.Width, source.Layout.Height)
 			if source.Kind == model.SourceKindHLS {
-				videoFilter = fmt.Sprintf("%ssetpts=PTS-STARTPTS,scale=%d:%d:flags=lanczos,format=rgba", inputLabel, source.Layout.Width, source.Layout.Height)
+				videoFilter = fmt.Sprintf("%ssetpts=PTS-STARTPTS,fps=%d,scale=%d:%d:flags=lanczos,format=rgba", inputLabel, project.Output.FrameRate, source.Layout.Width, source.Layout.Height)
 			}
 			if radius := effectiveRadius(source.Layout.Width, source.Layout.Height, source.Layout.Radius); radius > 0 {
 				videoFilter += roundedCornersFilter(source.Layout.Width, source.Layout.Height, radius)
@@ -124,7 +127,17 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 
 	audioMapped := false
 	if audioIndex, ok := resolveAudioInput(project, enabled, inputIndexes); ok {
-		args = append(args, "-map", fmt.Sprintf("%d:a?", audioIndex), "-c:a", "aac", "-b:a", project.Output.AudioBitrate)
+		audioMap := fmt.Sprintf("%d:a?", audioIndex)
+		if project.Output.Mode == model.OutputModeYouTube {
+			audioMap = fmt.Sprintf("%d:a:0", audioIndex)
+		}
+		args = append(
+			args,
+			"-map", audioMap,
+			"-af", "aresample=async=1:first_pts=0",
+			"-c:a", "aac",
+			"-b:a", project.Output.AudioBitrate,
+		)
 		audioMapped = true
 	}
 	if !audioMapped {
@@ -137,9 +150,13 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 		"-pix_fmt", "yuv420p",
 		"-r", strconv.Itoa(project.Output.FrameRate),
 		"-g", strconv.Itoa(project.Output.FrameRate*2),
+		"-keyint_min", strconv.Itoa(project.Output.FrameRate*2),
 		"-b:v", project.Output.VideoBitrate,
 	)
 
+	if err := validateUserFFmpegArgs(project.Output.AdditionalArgs); err != nil {
+		return BuildResult{}, err
+	}
 	args = append(args, project.Output.AdditionalArgs...)
 
 	switch project.Output.Mode {
@@ -161,11 +178,19 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 		if project.Output.YouTube.StreamKey == "" {
 			return BuildResult{}, fmt.Errorf("youtube stream key is required")
 		}
+		args = append(args,
+			"-vsync", "cfr",
+			"-sc_threshold", "0",
+			"-force_key_frames", "expr:gte(t,n_forced*2)",
+		)
 		if project.Output.YouTube.Preset == "youtube-default" {
 			args = append(args, "-maxrate", project.Output.VideoBitrate, "-bufsize", doubleBitrate(project.Output.VideoBitrate), "-tune", "zerolatency")
 		}
+		if err := validateUserFFmpegArgs(project.Output.YouTube.AdditionalArgs); err != nil {
+			return BuildResult{}, err
+		}
 		args = append(args, project.Output.YouTube.AdditionalArgs...)
-		args = append(args, "-f", "flv", strings.TrimRight(project.Output.YouTube.RTMPURL, "/")+"/"+project.Output.YouTube.StreamKey)
+		args = append(args, "-flvflags", "no_duration_filesize", "-f", "flv", strings.TrimRight(project.Output.YouTube.RTMPURL, "/")+"/"+project.Output.YouTube.StreamKey)
 	default:
 		return BuildResult{}, fmt.Errorf("unsupported output mode %q", project.Output.Mode)
 	}
@@ -175,7 +200,9 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 
 func buildHLSInputArgs(url string) []string {
 	return []string{
-		"-fflags", "+genpts",
+		"-re",
+		"-thread_queue_size", "1024",
+		"-fflags", "+genpts+igndts",
 		"-reconnect", "1",
 		"-reconnect_streamed", "1",
 		"-reconnect_on_network_error", "1",
@@ -184,6 +211,26 @@ func buildHLSInputArgs(url string) []string {
 		"-rw_timeout", "15000000",
 		"-i", url,
 	}
+}
+
+func validateUserFFmpegArgs(args []string) error {
+	blocked := map[string]struct{}{
+		"-f":                  {},
+		"-filter_complex":     {},
+		"-headers":            {},
+		"-i":                  {},
+		"-map":                {},
+		"-protocol_whitelist": {},
+	}
+	for _, arg := range args {
+		if _, ok := blocked[arg]; ok {
+			return fmt.Errorf("ffmpeg arg %q is not allowed in additional args", arg)
+		}
+		if strings.Contains(arg, "://") || strings.HasPrefix(arg, "file:") {
+			return fmt.Errorf("ffmpeg input or output target %q is not allowed in additional args", arg)
+		}
+	}
+	return nil
 }
 
 func assetPathByID(assets []model.Asset, dataDir, assetID string) (string, error) {

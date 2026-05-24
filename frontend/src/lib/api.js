@@ -26,6 +26,17 @@ export const api = {
   getRuntimeTexts() {
     return request('/api/v1/runtime/texts');
   },
+  getLogs(target = 'server', lines = 200) {
+    const search = new URLSearchParams({
+      target,
+      lines: String(lines),
+      _ts: String(Date.now())
+    });
+    return request(`/api/v1/logs?${search.toString()}`);
+  },
+  getStreamHealth() {
+    return request('/api/v1/runtime/stream-health');
+  },
   saveState(project) {
     return request('/api/v1/state', {
       method: 'PUT',

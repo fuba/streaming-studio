@@ -3,7 +3,7 @@ services:
     build:
       context: .
     ports:
-      - "127.0.0.1:28080:8080"
+      - "${STUDIO_BIND_ADDR:-127.0.0.1}:28080:8080"
     volumes:
       - studio-data:/data
     restart: unless-stopped
