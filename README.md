@@ -513,6 +513,8 @@ to the backend on port `8080`.
 
 ## Troubleshooting
 
+For detailed HLS-to-YouTube stutter diagnosis, including the timestamp issue caused by `-use_wallclock_as_timestamps`, see [Streaming Diagnostics](docs/streaming-diagnostics.md).
+
 ### The browser UI loads but the stream does not start
 
 Check:

@@ -3,6 +3,7 @@ package stream
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,12 @@ func TestBuildFFmpegArgsForHLSOutput(t *testing.T) {
 	}
 
 	command := strings.Join(result.Args, " ")
+	assertContains(t, command, "-re -thread_queue_size 1024")
+	assertContains(t, command, "-thread_queue_size 1024")
+	assertContains(t, command, "-fflags +genpts+igndts")
+	if strings.Contains(command, "-use_wallclock_as_timestamps") {
+		t.Fatalf("command = %q, want HLS packet timestamps to come from the stream", command)
+	}
 	assertContains(t, command, "https://example.com/live-a.m3u8")
 	assertContains(t, command, "-reconnect 1")
 	assertContains(t, command, "-reconnect_streamed 1")
@@ -137,8 +144,48 @@ func TestBuildFFmpegArgsForYouTubePreset(t *testing.T) {
 	}
 
 	command := strings.Join(result.Args, " ")
+	assertContains(t, command, "-f lavfi -i color=")
+	assertContains(t, command, "-keyint_min 60")
+	assertContains(t, command, "-af aresample=async=1:first_pts=0")
+	assertContains(t, command, "-vsync cfr -sc_threshold 0 -force_key_frames expr:gte(t,n_forced*2)")
+	assertContains(t, command, "-flvflags no_duration_filesize")
 	assertContains(t, command, "-f flv rtmp://a.rtmp.youtube.com/live2/abcd-efgh-ijkl")
 	assertContains(t, command, "-maxrate 6000k -bufsize 12000k -tune zerolatency")
+	assertArgSequence(t, result.Args, "-map", "1:a:0")
+	if strings.Contains(command, "-re -f lavfi") {
+		t.Fatalf("command = %q, want no input-side -re throttling for YouTube output", command)
+	}
+}
+
+func TestBuildFFmpegArgsDropsHLSFramesBeforeScaling(t *testing.T) {
+	t.Parallel()
+
+	project := model.DefaultProjectState()
+	project.Output.Mode = model.OutputModeYouTube
+	project.Output.FrameRate = 30
+	project.Sources = []model.Source{
+		{
+			ID:      "cam-a",
+			Name:    "Camera A",
+			Kind:    model.SourceKindHLS,
+			Enabled: true,
+			Layout: model.Layout{
+				Width:   640,
+				Height:  360,
+				Opacity: 1,
+			},
+			HLS: &model.HLSSource{URL: "https://example.com/live-a.m3u8"},
+		},
+	}
+	project.Output.YouTube.StreamKey = "abcd-efgh-ijkl"
+
+	result, err := BuildFFmpegArgs(project, BuildConfig{DataDir: "/var/lib/studio"})
+	if err != nil {
+		t.Fatalf("BuildFFmpegArgs() returned error: %v", err)
+	}
+
+	command := strings.Join(result.Args, " ")
+	assertContains(t, command, "[1:v]setpts=PTS-STARTPTS,fps=30,scale=640:360:flags=lanczos,format=rgba[src1]")
 }
 
 func TestBuildFFmpegArgsRejectsUnsafeHLSOutputPath(t *testing.T) {
@@ -216,6 +263,32 @@ func TestBuildFFmpegArgsKeepsOpacityZeroAndFallsBackAudio(t *testing.T) {
 	command := strings.Join(result.Args, " ")
 	assertContains(t, command, "colorchannelmixer=aa=0.000")
 	assertContains(t, command, "-map 1:a?")
+	assertContains(t, command, "-af aresample=async=1:first_pts=0")
+}
+
+func TestBuildFFmpegArgsRejectsUnsafeAdditionalArgs(t *testing.T) {
+	t.Parallel()
+
+	project := model.DefaultProjectState()
+	project.Output.AdditionalArgs = []string{"-f", "flv", "rtmp://example.test/live"}
+	project.Sources = []model.Source{
+		{
+			ID:      "cam-a",
+			Name:    "Camera A",
+			Kind:    model.SourceKindHLS,
+			Enabled: true,
+			Layout: model.Layout{
+				Width:   1280,
+				Height:  720,
+				Opacity: 1,
+			},
+			HLS: &model.HLSSource{URL: "https://example.com/live-a.m3u8"},
+		},
+	}
+
+	if _, err := BuildFFmpegArgs(project, BuildConfig{DataDir: "/data"}); err == nil {
+		t.Fatalf("BuildFFmpegArgs() error = nil, want unsafe additional args error")
+	}
 }
 
 func TestBuildFFmpegArgsUsesNotoFallbackForJapaneseText(t *testing.T) {
@@ -431,4 +504,14 @@ func assertContains(t *testing.T, haystack, needle string) {
 	if !strings.Contains(haystack, needle) {
 		t.Fatalf("expected %q to contain %q", haystack, needle)
 	}
+}
+
+func assertArgSequence(t *testing.T, args []string, want ...string) {
+	t.Helper()
+	for i := 0; i <= len(args)-len(want); i++ {
+		if slices.Equal(args[i:i+len(want)], want) {
+			return
+		}
+	}
+	t.Fatalf("args = %#v, want sequence %#v", args, want)
 }
