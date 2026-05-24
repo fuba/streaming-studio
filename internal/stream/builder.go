@@ -45,6 +45,7 @@ func BuildFFmpegArgs(project model.ProjectState, cfg BuildConfig) (BuildResult, 
 		"-y",
 	}
 	args = append(args,
+		"-re",
 		"-f", "lavfi",
 		"-i", fmt.Sprintf("color=c=%s:s=%dx%d:r=%d", ffmpegColor(project.Canvas.BackgroundColor), project.Canvas.Width, project.Canvas.Height, project.Output.FrameRate),
 	)

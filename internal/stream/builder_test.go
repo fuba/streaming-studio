@@ -144,7 +144,7 @@ func TestBuildFFmpegArgsForYouTubePreset(t *testing.T) {
 	}
 
 	command := strings.Join(result.Args, " ")
-	assertContains(t, command, "-f lavfi -i color=")
+	assertArgSequence(t, result.Args, "-re", "-f", "lavfi")
 	assertContains(t, command, "-keyint_min 60")
 	assertContains(t, command, "-af aresample=async=1:first_pts=0")
 	assertContains(t, command, "-vsync cfr -sc_threshold 0 -force_key_frames expr:gte(t,n_forced*2)")
@@ -152,9 +152,6 @@ func TestBuildFFmpegArgsForYouTubePreset(t *testing.T) {
 	assertContains(t, command, "-f flv rtmp://a.rtmp.youtube.com/live2/abcd-efgh-ijkl")
 	assertContains(t, command, "-maxrate 6000k -bufsize 12000k -tune zerolatency")
 	assertArgSequence(t, result.Args, "-map", "1:a:0")
-	if strings.Contains(command, "-re -f lavfi") {
-		t.Fatalf("command = %q, want no input-side -re throttling for YouTube output", command)
-	}
 }
 
 func TestBuildFFmpegArgsDropsHLSFramesBeforeScaling(t *testing.T) {

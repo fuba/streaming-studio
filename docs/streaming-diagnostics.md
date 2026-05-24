@@ -34,6 +34,7 @@ After that damaged input is passed through `setpts=PTS-STARTPTS,fps=<outputFrame
 For HLS sources, the pipeline should:
 
 - Preserve stream-native packet timestamps.
+- Pace the synthetic `lavfi` background input with `-re` so it cannot become an unbounded master clock if an HLS source stalls.
 - Add `-re` immediately before each HLS input so FFmpeg reads the source at media rate instead of burst-reading HLS segments faster than realtime.
 - Keep reconnect options on the HLS input so transient HTTP failures can recover.
 - Avoid `-use_wallclock_as_timestamps`.
@@ -57,6 +58,12 @@ For each HLS source, the generated command should contain input options similar 
 -reconnect_delay_max 10
 -rw_timeout 15000000
 -i <hls-url>
+```
+
+The synthetic background input should also be paced:
+
+```text
+-re -f lavfi -i color=...
 ```
 
 It should not contain:
