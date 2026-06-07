@@ -29,8 +29,12 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	stateStore := store.NewFileStore(cfg.StatePath)
-	if _, err := stateStore.Load(); err != nil {
+	stateStore := store.NewFileStoreWithBackup(cfg.StatePath, cfg.StateBackupPath)
+	project, err := stateStore.Load()
+	if err != nil {
+		logger.Fatal(err)
+	}
+	if err := stateStore.Save(project); err != nil {
 		logger.Fatal(err)
 	}
 

@@ -104,3 +104,27 @@ func TestFileStorePersistsOutputPresets(t *testing.T) {
 		t.Fatalf("preset YouTube preset = %q, want youtube-default", reloaded.OutputPresets[0].Settings.YouTube.Preset)
 	}
 }
+
+func TestFileStoreMirrorsStateToBackupPath(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "data", "state.json")
+	backupPath := filepath.Join(tempDir, "backup", "streaming-studio", "project-state", "state.json")
+	store := NewFileStoreWithBackup(path, backupPath)
+	state := model.DefaultProjectState()
+	state.Canvas.Width = 1920
+
+	if err := store.Save(state); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+
+	backupStore := NewFileStore(backupPath)
+	reloaded, err := backupStore.Load()
+	if err != nil {
+		t.Fatalf("backup Load() returned error: %v", err)
+	}
+	if reloaded.Canvas.Width != 1920 {
+		t.Fatalf("backup Canvas.Width = %d, want 1920", reloaded.Canvas.Width)
+	}
+}

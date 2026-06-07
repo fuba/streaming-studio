@@ -12,6 +12,11 @@ When an HLS source is deleted, any matching `audioSourceId` is cleared from both
 the current output settings and all saved output presets. This keeps later project
 saves from failing validation after source cleanup.
 
+The project state is saved to `/data/state.json` in the container and mirrored to
+`/sanjou9000/backup/streaming-studio/project-state/state.json`. The mirror path is
+controlled by `STATE_BACKUP_PATH` and is mounted through docker compose from
+`/sanjou9000/backup` on the host.
+
 Preset validation uses the same output validation as the current project output:
 
 - HLS output paths must stay inside the data directory.

@@ -11,12 +11,17 @@ import (
 )
 
 type FileStore struct {
-	path string
-	mu   sync.RWMutex
+	path       string
+	backupPath string
+	mu         sync.RWMutex
 }
 
 func NewFileStore(path string) *FileStore {
 	return &FileStore{path: path}
+}
+
+func NewFileStoreWithBackup(path, backupPath string) *FileStore {
+	return &FileStore{path: path, backupPath: backupPath}
 }
 
 func (s *FileStore) Load() (model.ProjectState, error) {
@@ -79,12 +84,27 @@ func (s *FileStore) saveLocked(state model.ProjectState) error {
 		return err
 	}
 
-	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, payload, 0o644); err != nil {
+	if err := writeStateFile(s.path, payload); err != nil {
+		return err
+	}
+	if s.backupPath != "" {
+		if err := writeStateFile(s.backupPath, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeStateFile(path string, payload []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
-	return os.Rename(tmpPath, s.path)
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, payload, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (s *FileStore) loadLocked() (model.ProjectState, error) {
