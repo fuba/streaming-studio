@@ -285,6 +285,18 @@ a {
   align-items: center;
 }
 
+.preset-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+.preset-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
 .log-toolbar input {
   max-width: 7rem;
 }
@@ -560,6 +572,10 @@ label span {
   }
 
   .field-grid.two {
+    grid-template-columns: 1fr;
+  }
+
+  .preset-actions {
     grid-template-columns: 1fr;
   }
 }

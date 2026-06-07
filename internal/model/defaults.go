@@ -8,8 +8,9 @@ func DefaultProjectState() ProjectState {
 			BackgroundColor:       "#111827",
 			EditorBackgroundColor: "#020202",
 		},
-		Sources: []Source{},
-		Assets:  []Asset{},
+		Sources:       []Source{},
+		Assets:        []Asset{},
+		OutputPresets: []OutputPreset{},
 		Output: OutputSettings{
 			Mode:         OutputModeHLS,
 			FrameRate:    30,

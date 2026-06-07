@@ -128,47 +128,18 @@ func normalizeState(state *model.ProjectState) {
 	if state.Canvas.EditorBackgroundColor == "" {
 		state.Canvas.EditorBackgroundColor = defaults.Canvas.EditorBackgroundColor
 	}
-	if state.Output.Mode == "" {
-		state.Output.Mode = defaults.Output.Mode
-	}
-	if state.Output.FrameRate <= 0 {
-		state.Output.FrameRate = defaults.Output.FrameRate
-	}
-	if state.Output.VideoBitrate == "" {
-		state.Output.VideoBitrate = defaults.Output.VideoBitrate
-	}
-	if state.Output.AudioBitrate == "" {
-		state.Output.AudioBitrate = defaults.Output.AudioBitrate
-	}
-	if state.Output.HLS.SegmentDuration <= 0 {
-		state.Output.HLS.SegmentDuration = defaults.Output.HLS.SegmentDuration
-	}
-	if state.Output.HLS.ListSize <= 0 {
-		state.Output.HLS.ListSize = defaults.Output.HLS.ListSize
-	}
-	if state.Output.HLS.Path == "" {
-		state.Output.HLS.Path = defaults.Output.HLS.Path
-	}
-	if state.Output.HLS.PublicPath == "" {
-		state.Output.HLS.PublicPath = defaults.Output.HLS.PublicPath
-	}
-	if state.Output.YouTube.RTMPURL == "" {
-		state.Output.YouTube.RTMPURL = defaults.Output.YouTube.RTMPURL
-	}
-	if state.Output.YouTube.Preset == "" {
-		state.Output.YouTube.Preset = defaults.Output.YouTube.Preset
-	}
+	normalizeOutputSettings(&state.Output, defaults.Output)
 	if state.Sources == nil {
 		state.Sources = []model.Source{}
 	}
 	if state.Assets == nil {
 		state.Assets = []model.Asset{}
 	}
-	if state.Output.AdditionalArgs == nil {
-		state.Output.AdditionalArgs = []string{}
+	if state.OutputPresets == nil {
+		state.OutputPresets = []model.OutputPreset{}
 	}
-	if state.Output.YouTube.AdditionalArgs == nil {
-		state.Output.YouTube.AdditionalArgs = []string{}
+	for i := range state.OutputPresets {
+		normalizeOutputSettings(&state.OutputPresets[i].Settings, defaults.Output)
 	}
 	for i := range state.Sources {
 		if state.Sources[i].Text != nil && state.Sources[i].Text.BackgroundOpacity == nil {
@@ -193,5 +164,44 @@ func normalizeState(state *model.ProjectState) {
 		if state.Sources[i].Layout.Height <= 0 {
 			state.Sources[i].Layout.Height = 180
 		}
+	}
+}
+
+func normalizeOutputSettings(output *model.OutputSettings, defaults model.OutputSettings) {
+	if output.Mode == "" {
+		output.Mode = defaults.Mode
+	}
+	if output.FrameRate <= 0 {
+		output.FrameRate = defaults.FrameRate
+	}
+	if output.VideoBitrate == "" {
+		output.VideoBitrate = defaults.VideoBitrate
+	}
+	if output.AudioBitrate == "" {
+		output.AudioBitrate = defaults.AudioBitrate
+	}
+	if output.HLS.SegmentDuration <= 0 {
+		output.HLS.SegmentDuration = defaults.HLS.SegmentDuration
+	}
+	if output.HLS.ListSize <= 0 {
+		output.HLS.ListSize = defaults.HLS.ListSize
+	}
+	if output.HLS.Path == "" {
+		output.HLS.Path = defaults.HLS.Path
+	}
+	if output.HLS.PublicPath == "" {
+		output.HLS.PublicPath = defaults.HLS.PublicPath
+	}
+	if output.YouTube.RTMPURL == "" {
+		output.YouTube.RTMPURL = defaults.YouTube.RTMPURL
+	}
+	if output.YouTube.Preset == "" {
+		output.YouTube.Preset = defaults.YouTube.Preset
+	}
+	if output.AdditionalArgs == nil {
+		output.AdditionalArgs = []string{}
+	}
+	if output.YouTube.AdditionalArgs == nil {
+		output.YouTube.AdditionalArgs = []string{}
 	}
 }

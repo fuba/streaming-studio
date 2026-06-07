@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"streaming-studio/internal/model"
 )
@@ -60,5 +61,46 @@ func TestFileStorePersistsAndReloadsState(t *testing.T) {
 	}
 	if reloaded.Sources[0].Layout.Radius != 24 {
 		t.Fatalf("Layout.Radius = %d, want 24", reloaded.Sources[0].Layout.Radius)
+	}
+}
+
+func TestFileStorePersistsOutputPresets(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "state.json")
+	store := NewFileStore(path)
+	state := model.DefaultProjectState()
+	updatedAt := time.Date(2026, 6, 8, 10, 0, 0, 0, time.UTC)
+	state.ActiveOutputPresetID = "preset-live"
+	state.OutputPresets = []model.OutputPreset{
+		{
+			ID:        "preset-live",
+			Name:      "Live",
+			Settings:  state.Output,
+			CreatedAt: updatedAt,
+			UpdatedAt: updatedAt,
+		},
+	}
+
+	if err := store.Save(state); err != nil {
+		t.Fatalf("Save() returned error: %v", err)
+	}
+
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() after save returned error: %v", err)
+	}
+
+	if reloaded.ActiveOutputPresetID != "preset-live" {
+		t.Fatalf("ActiveOutputPresetID = %q, want preset-live", reloaded.ActiveOutputPresetID)
+	}
+	if len(reloaded.OutputPresets) != 1 {
+		t.Fatalf("len(OutputPresets) = %d, want 1", len(reloaded.OutputPresets))
+	}
+	if reloaded.OutputPresets[0].Name != "Live" {
+		t.Fatalf("OutputPresets[0].Name = %q, want Live", reloaded.OutputPresets[0].Name)
+	}
+	if reloaded.OutputPresets[0].Settings.YouTube.Preset != "youtube-default" {
+		t.Fatalf("preset YouTube preset = %q, want youtube-default", reloaded.OutputPresets[0].Settings.YouTube.Preset)
 	}
 }
