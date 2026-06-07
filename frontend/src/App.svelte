@@ -848,8 +848,24 @@
           <p class="panel-eyebrow">Scene</p>
           <h2>Canvas Editor</h2>
         </div>
-        <div class="stage-actions">
-          <button class="ghost" on:click={saveProject}>Save Layout</button>
+        <div class="stage-actions preset-toolbar">
+          <label class="toolbar-field preset-select-field">
+            <span>Output Preset</span>
+            <select value={project.activeOutputPresetId} on:change={(event) => applyOutputPreset(event.currentTarget.value)}>
+              <option value="">Manual settings</option>
+              {#each outputPresets as preset (preset.id)}
+                <option value={preset.id}>{preset.name}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="toolbar-field preset-name-field">
+            <span>Save As</span>
+            <input type="text" placeholder="Preset name" bind:value={outputPresetName} />
+          </label>
+          <button class="ghost" on:click={saveOutputPresetAs}>Save As</button>
+          <button class="ghost" disabled={!activeOutputPreset} on:click={updateActiveOutputPreset}>Update</button>
+          <button class="danger" disabled={!activeOutputPreset} on:click={deleteActiveOutputPreset}>Delete</button>
+          <button class="ghost" on:click={saveProject}>Save Project</button>
         </div>
       </div>
 
@@ -1094,26 +1110,6 @@
 
       <section class="form-section">
         <h3>Output</h3>
-        <div class="preset-tools">
-          <label class="full">
-            <span>Preset</span>
-            <select value={project.activeOutputPresetId} on:change={(event) => applyOutputPreset(event.currentTarget.value)}>
-              <option value="">Manual settings</option>
-              {#each outputPresets as preset (preset.id)}
-                <option value={preset.id}>{preset.name}</option>
-              {/each}
-            </select>
-          </label>
-          <label>
-            <span>Save As</span>
-            <input type="text" placeholder="Preset name" bind:value={outputPresetName} />
-          </label>
-          <div class="preset-actions">
-            <button class="ghost" on:click={saveOutputPresetAs}>Save As</button>
-            <button class="ghost" disabled={!activeOutputPreset} on:click={updateActiveOutputPreset}>Update</button>
-            <button class="danger" disabled={!activeOutputPreset} on:click={deleteActiveOutputPreset}>Delete</button>
-          </div>
-        </div>
         <label>
           <span>Mode</span>
           <select value={project.output.mode} on:change={(event) => updateProject((draft) => (draft.output.mode = event.currentTarget.value))}>
