@@ -341,6 +341,59 @@ func TestStateEndpointRejectsAbsoluteHLSPublicPath(t *testing.T) {
 	}
 }
 
+func TestStateEndpointRejectsDuplicateOutputPresetIDs(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	project := model.DefaultProjectState()
+	project.OutputPresets = []model.OutputPreset{
+		{ID: "preset-1", Name: "Primary", Settings: project.Output},
+		{ID: "preset-1", Name: "Backup", Settings: project.Output},
+	}
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/state", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestStateEndpointRejectsUnsafeOutputPresetPath(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	project := model.DefaultProjectState()
+	presetSettings := project.Output
+	presetSettings.HLS.Path = "../../../tmp/live.m3u8"
+	project.OutputPresets = []model.OutputPreset{
+		{ID: "preset-1", Name: "Unsafe", Settings: presetSettings},
+	}
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/state", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestCreateSourceEndpointAllowsDisabledDraftHLS(t *testing.T) {
 	t.Parallel()
 
@@ -524,6 +577,59 @@ func TestSourceUpdateRestartsRunningStreamOnSave(t *testing.T) {
 	}
 	if engine.stopCalls != 1 || engine.startCalls != 1 {
 		t.Fatalf("restart calls = stop:%d start:%d, want stop:1 start:1", engine.stopCalls, engine.startCalls)
+	}
+}
+
+func TestDeleteSourceClearsOutputPresetAudioSourceID(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	project := model.DefaultProjectState()
+	project.Sources = []model.Source{
+		{
+			ID:      "source-1",
+			Name:    "Camera",
+			Kind:    model.SourceKindHLS,
+			Enabled: true,
+			Layout:  model.Layout{Width: 640, Height: 360, Opacity: 1},
+			HLS:     &model.HLSSource{URL: "https://example.com/live.m3u8"},
+		},
+	}
+	project.Output.AudioSourceID = "source-1"
+	presetSettings := project.Output
+	presetSettings.AudioSourceID = "source-1"
+	project.OutputPresets = []model.OutputPreset{
+		{ID: "preset-1", Name: "Preset", Settings: presetSettings},
+	}
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("json.Marshal() returned error: %v", err)
+	}
+	saveRequest := httptest.NewRequest(http.MethodPut, "/api/v1/state", bytes.NewReader(body))
+	saveRequest.Header.Set("Content-Type", "application/json")
+	saveRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(saveRecorder, saveRequest)
+	if saveRecorder.Code != http.StatusOK {
+		t.Fatalf("save status = %d, want 200: %s", saveRecorder.Code, saveRecorder.Body.String())
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/sources/source-1", nil)
+	deleteRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(deleteRecorder, deleteRequest)
+
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200: %s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	var payload model.StateResponse
+	if err := json.Unmarshal(deleteRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned error: %v", err)
+	}
+	if payload.Project.Output.AudioSourceID != "" {
+		t.Fatalf("Output.AudioSourceID = %q, want empty", payload.Project.Output.AudioSourceID)
+	}
+	if payload.Project.OutputPresets[0].Settings.AudioSourceID != "" {
+		t.Fatalf("preset AudioSourceID = %q, want empty", payload.Project.OutputPresets[0].Settings.AudioSourceID)
 	}
 }
 

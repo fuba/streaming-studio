@@ -16,6 +16,8 @@
     },
     sources: [],
     assets: [],
+    outputPresets: [],
+    activeOutputPresetId: '',
     output: {
       mode: 'hls',
       frameRate: 30,
@@ -80,11 +82,14 @@
   };
   let streamHealthLoading = false;
   let streamHealthError = '';
+  let outputPresetName = '';
 
   $: imageAssets = project.assets.filter((asset) => asset.kind === 'image');
   $: fontAssets = project.assets.filter((asset) => asset.kind === 'font');
   $: selectedSource = project.sources.find((source) => source.id === selectedSourceId) || null;
   $: sourceOptions = project.sources.filter((source) => source.kind === 'hls');
+  $: outputPresets = project.outputPresets ?? [];
+  $: activeOutputPreset = outputPresets.find((preset) => preset.id === project.activeOutputPresetId) || null;
   $: fontFaceCSS = fontAssets
     .map((asset) => `@font-face{font-family:'asset-${asset.id}';src:url('${asset.url}');font-display:swap;}`)
     .join('');
@@ -463,9 +468,37 @@
         : null
     }));
     merged.assets = rawProject?.assets ?? [];
+    merged.outputPresets = (rawProject?.outputPresets ?? []).map((preset) => ({
+      id: preset.id,
+      name: preset.name,
+      settings: normalizeOutputSettings(preset.settings),
+      createdAt: preset.createdAt ?? '',
+      updatedAt: preset.updatedAt ?? ''
+    }));
+    merged.activeOutputPresetId = rawProject?.activeOutputPresetId ?? '';
+    if (merged.activeOutputPresetId && !merged.outputPresets.some((preset) => preset.id === merged.activeOutputPresetId)) {
+      merged.activeOutputPresetId = '';
+    }
     merged.output.additionalArgs = rawProject?.output?.additionalArgs ?? [];
     merged.output.youTube.additionalArgs = rawProject?.output?.youTube?.additionalArgs ?? [];
     return merged;
+  }
+
+  function normalizeOutputSettings(rawOutput) {
+    return {
+      ...defaultProject.output,
+      ...(rawOutput ?? {}),
+      hls: {
+        ...defaultProject.output.hls,
+        ...(rawOutput?.hls ?? {})
+      },
+      youTube: {
+        ...defaultProject.output.youTube,
+        ...(rawOutput?.youTube ?? {}),
+        additionalArgs: rawOutput?.youTube?.additionalArgs ?? []
+      },
+      additionalArgs: rawOutput?.additionalArgs ?? []
+    };
   }
 
   function normalizeStream(rawStream) {
@@ -561,6 +594,88 @@
     dirty = !sameJSON(project, savedProject);
   }
 
+  function saveOutputPresetAs() {
+    const now = new Date().toISOString();
+    const name = outputPresetName.trim() || nextOutputPresetName();
+    const preset = {
+      id: `out-${newClientID()}`,
+      name,
+      settings: structuredClone(project.output),
+      createdAt: now,
+      updatedAt: now
+    };
+    project = {
+      ...project,
+      activeOutputPresetId: preset.id,
+      outputPresets: [...outputPresets, preset]
+    };
+    outputPresetName = '';
+    updateDirtyState();
+    statusMessage = `Output preset saved as ${name}`;
+    errorMessage = '';
+  }
+
+  function updateActiveOutputPreset() {
+    if (!activeOutputPreset) {
+      errorMessage = 'Select an output preset first';
+      return;
+    }
+    const now = new Date().toISOString();
+    project = {
+      ...project,
+      outputPresets: outputPresets.map((preset) =>
+        preset.id === activeOutputPreset.id
+          ? {
+              ...preset,
+              settings: structuredClone(project.output),
+              updatedAt: now
+            }
+          : preset
+      )
+    };
+    updateDirtyState();
+    statusMessage = `Output preset updated: ${activeOutputPreset.name}`;
+    errorMessage = '';
+  }
+
+  function applyOutputPreset(presetId) {
+    const preset = outputPresets.find((item) => item.id === presetId);
+    project = {
+      ...project,
+      activeOutputPresetId: preset?.id ?? '',
+      output: preset ? structuredClone(preset.settings) : project.output
+    };
+    updateDirtyState();
+    statusMessage = preset ? `Output preset selected: ${preset.name}` : 'Output preset selection cleared';
+    errorMessage = '';
+  }
+
+  function deleteActiveOutputPreset() {
+    if (!activeOutputPreset) {
+      return;
+    }
+    const deletedName = activeOutputPreset.name;
+    project = {
+      ...project,
+      activeOutputPresetId: '',
+      outputPresets: outputPresets.filter((preset) => preset.id !== activeOutputPreset.id)
+    };
+    updateDirtyState();
+    statusMessage = `Output preset deleted: ${deletedName}`;
+    errorMessage = '';
+  }
+
+  function nextOutputPresetName() {
+    const base = project.output.mode === 'youtube' ? 'YouTube Output' : 'HLS Output';
+    let index = outputPresets.length + 1;
+    let name = `${base} ${index}`;
+    while (outputPresets.some((preset) => preset.name === name)) {
+      index += 1;
+      name = `${base} ${index}`;
+    }
+    return name;
+  }
+
   function sameJSON(left, right) {
     return JSON.stringify(left) === JSON.stringify(right);
   }
@@ -573,6 +688,12 @@
     }
     if (!sameJSON(localProject.output, previousSavedProject.output)) {
       merged.output = structuredClone(localProject.output);
+    }
+    if (!sameJSON(localProject.outputPresets, previousSavedProject.outputPresets)) {
+      merged.outputPresets = structuredClone(localProject.outputPresets);
+    }
+    if (localProject.activeOutputPresetId !== previousSavedProject.activeOutputPresetId) {
+      merged.activeOutputPresetId = localProject.activeOutputPresetId;
     }
 
     const localSources = new Map((localProject.sources ?? []).map((source) => [source.id, source]));
@@ -727,8 +848,24 @@
           <p class="panel-eyebrow">Scene</p>
           <h2>Canvas Editor</h2>
         </div>
-        <div class="stage-actions">
-          <button class="ghost" on:click={saveProject}>Save Layout</button>
+        <div class="stage-actions preset-toolbar">
+          <label class="toolbar-field preset-select-field">
+            <span>Output Preset</span>
+            <select value={project.activeOutputPresetId} on:change={(event) => applyOutputPreset(event.currentTarget.value)}>
+              <option value="">Manual settings</option>
+              {#each outputPresets as preset (preset.id)}
+                <option value={preset.id}>{preset.name}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="toolbar-field preset-name-field">
+            <span>Save As</span>
+            <input type="text" placeholder="Preset name" bind:value={outputPresetName} />
+          </label>
+          <button class="ghost" on:click={saveOutputPresetAs}>Save As</button>
+          <button class="ghost" disabled={!activeOutputPreset} on:click={updateActiveOutputPreset}>Update</button>
+          <button class="danger" disabled={!activeOutputPreset} on:click={deleteActiveOutputPreset}>Delete</button>
+          <button class="ghost" on:click={saveProject}>Save Project</button>
         </div>
       </div>
 

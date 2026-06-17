@@ -8,23 +8,25 @@ import (
 )
 
 type Config struct {
-	ListenAddr string
-	DataDir    string
-	UIDistDir  string
-	StatePath  string
-	LogPath    string
-	FFmpegLog  string
+	ListenAddr      string
+	DataDir         string
+	UIDistDir       string
+	StatePath       string
+	StateBackupPath string
+	LogPath         string
+	FFmpegLog       string
 }
 
 func LoadConfig() Config {
 	dataDir := getenv("DATA_DIR", "/data")
 	return Config{
-		ListenAddr: getenv("LISTEN_ADDR", ":8080"),
-		DataDir:    dataDir,
-		UIDistDir:  getenv("UI_DIST_DIR", "frontend/dist"),
-		StatePath:  filepath.Join(dataDir, "state.json"),
-		LogPath:    filepath.Join(dataDir, "logs", "server.log"),
-		FFmpegLog:  filepath.Join(dataDir, "logs", "ffmpeg.log"),
+		ListenAddr:      getenv("LISTEN_ADDR", ":8080"),
+		DataDir:         dataDir,
+		UIDistDir:       getenv("UI_DIST_DIR", "frontend/dist"),
+		StatePath:       filepath.Join(dataDir, "state.json"),
+		StateBackupPath: getenv("STATE_BACKUP_PATH", "/sanjou9000/backup/streaming-studio/project-state/state.json"),
+		LogPath:         filepath.Join(dataDir, "logs", "server.log"),
+		FFmpegLog:       filepath.Join(dataDir, "logs", "ffmpeg.log"),
 	}
 }
 

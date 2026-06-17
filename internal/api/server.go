@@ -269,6 +269,11 @@ func (s *Server) handleSourceByID(w http.ResponseWriter, r *http.Request) {
 			if state.Output.AudioSourceID == id {
 				state.Output.AudioSourceID = ""
 			}
+			for i := range state.OutputPresets {
+				if state.OutputPresets[i].Settings.AudioSourceID == id {
+					state.OutputPresets[i].Settings.AudioSourceID = ""
+				}
+			}
 			return nil
 		})
 		if err != nil {
@@ -734,14 +739,6 @@ func validateProjectState(dataDir string, project model.ProjectState) error {
 	if project.Canvas.Width <= 0 || project.Canvas.Height <= 0 {
 		return fmt.Errorf("canvas width and height must be positive")
 	}
-	if project.Output.Mode == model.OutputModeHLS {
-		if _, err := stream.ResolveOutputPath(dataDir, project.Output.HLS.Path); err != nil {
-			return fmt.Errorf("invalid hls output path: %w", err)
-		}
-		if err := validateHLSPublicPath(project.Output.HLS.PublicPath); err != nil {
-			return fmt.Errorf("invalid hls public path: %w", err)
-		}
-	}
 	seenSourceIDs := make(map[string]struct{}, len(project.Sources))
 	hlsSourceIDs := make(map[string]struct{}, len(project.Sources))
 	for _, source := range project.Sources {
@@ -756,9 +753,50 @@ func validateProjectState(dataDir string, project model.ProjectState) error {
 			hlsSourceIDs[source.ID] = struct{}{}
 		}
 	}
-	if project.Output.AudioSourceID != "" {
-		if _, ok := hlsSourceIDs[project.Output.AudioSourceID]; !ok {
-			return fmt.Errorf("audioSourceId %s does not reference an HLS source", project.Output.AudioSourceID)
+	if err := validateOutputSettings(dataDir, project.Output, hlsSourceIDs); err != nil {
+		return err
+	}
+
+	seenPresetIDs := make(map[string]struct{}, len(project.OutputPresets))
+	for _, preset := range project.OutputPresets {
+		if strings.TrimSpace(preset.ID) == "" {
+			return fmt.Errorf("output preset id is required")
+		}
+		if strings.TrimSpace(preset.Name) == "" {
+			return fmt.Errorf("output preset name is required")
+		}
+		if _, exists := seenPresetIDs[preset.ID]; exists {
+			return fmt.Errorf("duplicate output preset id %s", preset.ID)
+		}
+		seenPresetIDs[preset.ID] = struct{}{}
+		if err := validateOutputSettings(dataDir, preset.Settings, hlsSourceIDs); err != nil {
+			return fmt.Errorf("invalid output preset %s: %w", preset.ID, err)
+		}
+	}
+	if project.ActiveOutputPresetID != "" {
+		if _, ok := seenPresetIDs[project.ActiveOutputPresetID]; !ok {
+			return fmt.Errorf("activeOutputPresetId %s does not reference an output preset", project.ActiveOutputPresetID)
+		}
+	}
+	return nil
+}
+
+func validateOutputSettings(dataDir string, output model.OutputSettings, hlsSourceIDs map[string]struct{}) error {
+	switch output.Mode {
+	case model.OutputModeHLS:
+		if _, err := stream.ResolveOutputPath(dataDir, output.HLS.Path); err != nil {
+			return fmt.Errorf("invalid hls output path: %w", err)
+		}
+		if err := validateHLSPublicPath(output.HLS.PublicPath); err != nil {
+			return fmt.Errorf("invalid hls public path: %w", err)
+		}
+	case model.OutputModeYouTube:
+	default:
+		return fmt.Errorf("unsupported output mode %q", output.Mode)
+	}
+	if output.AudioSourceID != "" {
+		if _, ok := hlsSourceIDs[output.AudioSourceID]; !ok {
+			return fmt.Errorf("audioSourceId %s does not reference an HLS source", output.AudioSourceID)
 		}
 	}
 	return nil

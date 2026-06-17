@@ -116,11 +116,21 @@ type OutputSettings struct {
 	YouTube        YouTubeOutput `json:"youTube"`
 }
 
+type OutputPreset struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Settings  OutputSettings `json:"settings"`
+	CreatedAt time.Time      `json:"createdAt"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
 type ProjectState struct {
-	Canvas  Canvas         `json:"canvas"`
-	Sources []Source       `json:"sources"`
-	Assets  []Asset        `json:"assets"`
-	Output  OutputSettings `json:"output"`
+	Canvas               Canvas         `json:"canvas"`
+	Sources              []Source       `json:"sources"`
+	Assets               []Asset        `json:"assets"`
+	Output               OutputSettings `json:"output"`
+	OutputPresets        []OutputPreset `json:"outputPresets"`
+	ActiveOutputPresetID string         `json:"activeOutputPresetId"`
 }
 
 type StreamStatus struct {

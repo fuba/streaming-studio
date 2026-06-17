@@ -6,6 +6,9 @@ services:
       - "${STUDIO_BIND_ADDR:-127.0.0.1}:28080:8080"
     volumes:
       - studio-data:/data
+      - /sanjou9000/backup:/sanjou9000/backup
+    environment:
+      STATE_BACKUP_PATH: /sanjou9000/backup/streaming-studio/project-state/state.json
     restart: unless-stopped
 
 volumes:
